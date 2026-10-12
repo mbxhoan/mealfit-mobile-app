@@ -58,6 +58,21 @@ test("payment records only the remainder and tags collections made in an active 
   assert.equal(order(route, "B").payments.at(-1).sessionId, session(route).id);
 });
 
+test("an active route can collect and deliver a later stop in another shift", () => {
+  let state = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Tối" }, 1000), 2000);
+  state = markPaid(state, "B", "Chuyển khoản", 3000);
+  state = markDelivered(state, "B", 7000);
+  assert.equal(order(state, "B").deliveryStatus, "Đã giao hàng");
+  assert.equal(order(state, "B").payments.at(-1).sessionId, session(state).id);
+  assert.equal(session(state).legs.B.durationMs, 5000);
+
+  state = markDelivered(state, "A", 9000);
+  assert.equal(order(state, "A").deliveryStatus, "Đã giao hàng");
+  assert.equal(session(state).legs.A.startedAt, 7000);
+  assert.equal(session(state).legs.A.durationMs, 2000);
+  assert.equal(session(state).status, "completed");
+});
+
 test("new session groups stops by shift and keeps route edits inside each shift", () => {
   let state = createSession(seed(), ["B", "A"], { A: "Sáng", B: "Chiều" }, 1000);
   assert.equal(session(state).status, "notStarted");
@@ -81,6 +96,18 @@ test("new session groups stops by shift and keeps route edits inside each shift"
   state = addOrdersToSession(state, ["B"], "Sáng");
   assert.equal(order(state, "B").deliveryStatus, "Đang giao hàng");
   assert.deepEqual(session(state).orderIds, ["B", "C", "A"]);
+});
+
+test("session creation and adding orders save, update, and clear delivery notes", () => {
+  const initial = seed();
+  initial.orders.find(item => item.id === "B").note = "Ghi chú cũ";
+  initial.orders.find(item => item.id === "C").note = "Ghi chú cần xóa";
+  let state = createSession(initial, ["A"], { A: "Sáng" }, 1000, { A: "Giao trước 10:00" });
+  assert.equal(order(state, "A").note, "Giao trước 10:00");
+  state = addOrdersToSession(state, ["B"], "Chiều", { B: "Gọi trước khi đến" });
+  assert.equal(order(state, "B").note, "Gọi trước khi đến");
+  state = addOrdersToSession(state, ["C"], "Tối", { C: "" });
+  assert.equal(order(state, "C").note, "");
 });
 
 test("route reordering stays within a shift and cannot cross completed stops", () => {
@@ -148,7 +175,7 @@ test("route stats count session cash and transfer collections, route value and c
   assert.deepEqual(stats.shifts.map(item => item.done), [true, true]);
 });
 
-test("delivered session orders can re-enter the active route or return to pending", () => {
+test("delivered session orders can re-enter the active route or reopen their completed route", () => {
   let state = startSession(createSession(seed(), ["A"], { A: "Sáng" }, 1000), 2000);
   state = markPaid(state, "A", "Tiền mặt", 3000);
   state = markDelivered(state, "A", 4000);
@@ -165,11 +192,24 @@ test("delivered session orders can re-enter the active route or return to pendin
   second = markDelivered(second, "A", 9000);
   assert.equal(order(second, "A").deliveryStatus, "Đã giao hàng");
 
-  const pending = reopenDeliveredOrder(second, "A", "Chưa giao hàng", null, 10_000);
-  assert.equal(order(pending, "A").deliveryStatus, "Chưa giao hàng");
-  assert.equal(order(pending, "A").sessionId, null);
-  assert.equal(order(pending, "A").paidAmount, 100_000);
-  assert.equal(pending.sessions.find(item => item.id === active.id).orderIds.includes("A"), false);
+  const reopened = reopenDeliveredOrder(second, "A", "Chưa giao hàng", "Tối", 10_000);
+  assert.equal(order(reopened, "A").deliveryStatus, "Đang giao hàng");
+  assert.equal(order(reopened, "A").sessionId, active.id);
+  assert.equal(order(reopened, "A").paidAmount, 100_000);
+  assert.deepEqual(reopened.sessions.find(item => item.id === active.id).orderIds, ["B", "A"]);
+  assert.equal(reopened.activeSessionId, active.id);
+});
+
+test("returning a delivered order to pending readds it at the end of its shift in the current route", () => {
+  let state = startSession(createSession(seed(), ["A", "B", "C"], { A: "Sáng", B: "Sáng", C: "Sáng" }, 1000), 2000);
+  state = markDelivered(state, "B", 3000);
+  state = reopenDeliveredOrder(state, "B", "Chưa giao hàng", "Sáng", 4000);
+
+  assert.deepEqual(session(state).orderIds, ["A", "C", "B"]);
+  assert.equal(order(state, "B").deliveryStatus, "Đang giao hàng");
+  assert.equal(order(state, "B").sessionId, session(state).id);
+  assert.equal(session(state).legs.B, undefined);
+  assert.equal(session(state).stopStarts.B, 4000);
 });
 
 test("reopening an old stop in a new route keeps its completed history intact", () => {

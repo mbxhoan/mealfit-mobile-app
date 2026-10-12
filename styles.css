@@ -177,6 +177,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .select-order.selected { border-color: var(--accent); box-shadow: 0 0 0 2px #f4511e1a; }
 .shift-selection-row { display: grid; gap: 7px; padding: 10px; }
 .shift-selection-row .select-order { padding: 4px; border: 0; background: transparent; }
+.selection-note { display: grid; gap: 6px; padding: 4px 2px 2px; }
+.selection-note label { color: var(--muted); font-size: 11px; font-weight: 650; }
+.selection-note textarea { width: 100%; min-height: 60px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); font: inherit; font-size: 13px; line-height: 1.4; resize: vertical; }
+.selection-note textarea::placeholder { color: #a0a2a6; }
+.note-clear { min-height: 36px; justify-self: end; padding: 3px 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
 .shift-select { min-height: 40px; padding: 0 11px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); font-size: 12px; }
 .stop-shift { margin-top: 6px; }
 .shift-label { display: inline-flex; margin-top: 6px; padding: 4px 8px; border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 11px; }

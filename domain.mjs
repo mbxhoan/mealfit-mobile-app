@@ -97,8 +97,7 @@ export function markPaid(state, orderId, method, paidAt = Date.now()) {
   let sessionId = null;
   if (order.sessionId) {
     const session = getActiveSession(state);
-    if (!session || session.id !== order.sessionId || session.status !== "active") throw new Error("Phiên đang tạm dừng hoặc không còn hoạt động.");
-    if (session.orderIds.find(id => !session.legs[id]?.completedAt) !== orderId) throw new Error("Hoàn tất điểm giao hiện tại trước khi ghi nhận thanh toán.");
+    if (!session || session.id !== order.sessionId || session.status !== "active" || !session.orderIds.includes(orderId)) throw new Error("Phiên đang tạm dừng hoặc không còn hoạt động.");
     sessionId = session.id;
   }
   const amount = dueAmount(order);
@@ -110,7 +109,7 @@ export function markPaid(state, orderId, method, paidAt = Date.now()) {
   }));
 }
 
-export function createSession(state, orderIds, shiftsByOrder = {}, createdAt = Date.now()) {
+export function createSession(state, orderIds, shiftsByOrder = {}, createdAt = Date.now(), notesByOrder = {}) {
   if (getActiveSession(state)) throw new Error("Đã có một phiên giao hàng đang hoạt động.");
   const ids = [...new Set(orderIds)];
   if (!ids.length) throw new Error("Chọn ít nhất một đơn hàng.");
@@ -138,7 +137,7 @@ export function createSession(state, orderIds, shiftsByOrder = {}, createdAt = D
     activeSessionId: session.id,
     sessions: [...state.sessions, session],
     orders: state.orders.map(order => ids.includes(order.id)
-      ? { ...order, deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
+      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
       : order)
   };
 }
@@ -190,7 +189,7 @@ export function cancelSession(state, cancelledAt = Date.now()) {
   };
 }
 
-export function addOrdersToSession(state, orderIds, shift = null) {
+export function addOrdersToSession(state, orderIds, shift = null, notesByOrder = {}) {
   const session = editableSession(state);
   if (!validShift(shift) || !shift) throw new Error("Chọn ca cho các đơn được thêm.");
   const ids = [...new Set(orderIds)].filter(id => !session.orderIds.includes(id));
@@ -207,7 +206,7 @@ export function addOrdersToSession(state, orderIds, shift = null) {
       stopStarts
     } : item),
     orders: state.orders.map(order => ids.includes(order.id)
-      ? { ...order, deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
+      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
       : order)
   };
 }
@@ -274,13 +273,11 @@ export function markDelivered(state, orderId, deliveredAt = Date.now()) {
   if (!order || order.deliveryStatus !== "Đang giao hàng") throw new Error("Đơn hàng không ở trạng thái đang giao.");
   const session = getActiveSession(state);
   if (order.sessionId && (!session || session.id !== order.sessionId || session.status !== "active")) throw new Error("Tiếp tục phiên giao hàng trước khi xác nhận.");
+  if (order.sessionId && !session.orderIds.includes(orderId)) throw new Error("Đơn hàng không còn trong phiên giao hàng này.");
   let next = updateOrder(state, orderId, current => ({ ...current, deliveryStatus: "Đã giao hàng", deliveredAt }));
-  if (!session || !session.orderIds.includes(orderId)) return next;
-  const nextStop = session.orderIds.find(id => !session.legs[id]?.completedAt);
-  if (nextStop !== orderId) throw new Error("Hoàn tất điểm giao hiện tại trước khi chuyển sang điểm tiếp theo.");
-  const position = session.orderIds.indexOf(orderId);
-  const previousId = session.orderIds.slice(0, position).reverse().find(id => session.legs[id]?.completedAt);
-  const startedAt = session.stopStarts[orderId] ?? (previousId ? session.legs[previousId].completedAt : session.startedAt);
+  if (!session || !order.sessionId) return next;
+  const previousCompletedAt = Math.max(0, ...Object.values(session.legs).map(leg => leg.completedAt || 0));
+  const startedAt = session.stopStarts[orderId] ?? (previousCompletedAt || session.startedAt);
   if (!startedAt) throw new Error("Bắt đầu phiên trước khi xác nhận điểm giao.");
   const legs = {
     ...session.legs,
@@ -307,7 +304,28 @@ export function reopenDeliveredOrder(state, orderId, deliveryStatus, shift, reop
   const current = getActiveSession(state);
   if (current?.status === "paused") throw new Error("Tiếp tục phiên đang chạy trước khi sửa trạng thái đơn.");
 
-  if (deliveryStatus === "Chưa giao hàng") {
+  if (current) {
+    if (!validShift(shift) || !shift) throw new Error("Chọn ca cho đơn cần giao lại.");
+    const orderIds = current.orderIds.filter(id => id !== orderId);
+    const legs = { ...current.legs };
+    delete legs[orderId];
+    const stopStarts = { ...current.stopStarts, [orderId]: current.status === "notStarted" ? null : reopenedAt };
+    const shifts = { ...current.shifts, [orderId]: shift };
+    return {
+      ...state,
+      sessions: state.sessions.map(item => item.id === current.id ? {
+        ...item,
+        orderIds: sortPendingByShift([...orderIds, orderId], shifts, legs),
+        legs,
+        stopStarts,
+        shifts,
+        completedAt: null
+      } : item),
+      orders: state.orders.map(item => item.id === orderId ? { ...item, deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: current.id, deliveredAt: null } : item)
+    };
+  }
+
+  if (deliveryStatus === "Chưa giao hàng" && oldSession?.status !== "completed") {
     let next = updateOrder(state, orderId, item => ({ ...item, deliveryStatus, deliveryMethod: null, sessionId: null, deliveredAt: null }));
     if (oldSession) {
       next = {
@@ -320,28 +338,6 @@ export function reopenDeliveredOrder(state, orderId, deliveryStatus, shift, reop
         } : item)
       };
     }
-    return next;
-  }
-
-  if (current) {
-    if (!validShift(shift) || !shift) throw new Error("Chọn ca cho đơn cần giao lại.");
-    const orderIds = current.orderIds.filter(id => id !== orderId);
-    const legs = { ...current.legs };
-    delete legs[orderId];
-    const stopStarts = { ...current.stopStarts, [orderId]: current.status === "notStarted" ? null : reopenedAt };
-    const shifts = { ...current.shifts, [orderId]: shift };
-    const next = {
-      ...state,
-      sessions: state.sessions.map(item => item.id === current.id ? {
-        ...item,
-        orderIds: sortPendingByShift([...orderIds, orderId], shifts, legs),
-        legs,
-        stopStarts,
-        shifts,
-        completedAt: null
-      } : item),
-      orders: state.orders.map(item => item.id === orderId ? { ...item, deliveryStatus, deliveryMethod: "Phiên giao hàng", sessionId: current.id, deliveredAt: null } : item)
-    };
     return next;
   }
 
@@ -362,7 +358,7 @@ export function reopenDeliveredOrder(state, orderId, deliveryStatus, shift, reop
         stopStarts: { ...item.stopStarts, [orderId]: reopenedAt },
         completedAt: null
       } : item),
-      orders: state.orders.map(item => item.id === orderId ? { ...item, deliveryStatus, deliveryMethod: "Phiên giao hàng", sessionId: oldSession.id, deliveredAt: null } : item)
+      orders: state.orders.map(item => item.id === orderId ? { ...item, deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: oldSession.id, deliveredAt: null } : item)
     };
   }
 
