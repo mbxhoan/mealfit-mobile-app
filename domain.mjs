@@ -11,12 +11,23 @@ export function allowedPhotoCount(existingCount, requestedCount) {
 
 export const dueAmount = order => Math.max(0, order.total - order.paidAmount);
 
+const shiftRank = shift => {
+  const rank = SHIFT_OPTIONS.indexOf(shift);
+  return rank < 0 ? SHIFT_OPTIONS.length : rank;
+};
+
+function sortPendingByShift(orderIds, shifts, legs) {
+  const completed = orderIds.filter(id => legs[id]?.completedAt);
+  const pending = orderIds.filter(id => !legs[id]?.completedAt);
+  return [...completed, ...pending.sort((a, b) => shiftRank(shifts[a]) - shiftRank(shifts[b]))];
+}
+
 export function normalizeState(state) {
   const sessions = state.sessions.map(session => {
     const status = ["notStarted", "active", "paused", "completed", "cancelled"].includes(session.status)
       ? session.status
       : session.status === "completed" ? "completed" : session.startedAt ? "active" : "notStarted";
-    return {
+    const normalized = {
       ...session,
       status,
       createdAt: session.createdAt ?? session.startedAt ?? null,
@@ -28,6 +39,8 @@ export function normalizeState(state) {
       pausedAt: session.pausedAt ?? null,
       completedAt: session.completedAt ?? null
     };
+    normalized.orderIds = sortPendingByShift(normalized.orderIds, normalized.shifts, normalized.legs);
+    return normalized;
   });
   const active = sessions.find(session => session.id === state.activeSessionId && OPEN_SESSION_STATUSES.includes(session.status))
     || sessions.find(session => OPEN_SESSION_STATUSES.includes(session.status));
@@ -110,7 +123,7 @@ export function createSession(state, orderIds, shiftsByOrder = {}, createdAt = D
   const session = {
     id: `PS-${createdAt}-${state.sessions.length + 1}`,
     status: "notStarted",
-    orderIds: ids,
+    orderIds: sortPendingByShift(ids, shifts, {}),
     shifts,
     createdAt,
     startedAt: null,
@@ -189,7 +202,7 @@ export function addOrdersToSession(state, orderIds, shift = null) {
     ...state,
     sessions: state.sessions.map(item => item.id === session.id ? {
       ...item,
-      orderIds: [...item.orderIds, ...ids],
+      orderIds: sortPendingByShift([...item.orderIds, ...ids], { ...item.shifts, ...Object.fromEntries(ids.map(id => [id, shift])) }, item.legs),
       shifts: { ...item.shifts, ...Object.fromEntries(ids.map(id => [id, shift])) },
       stopStarts
     } : item),
@@ -221,22 +234,39 @@ export function setSessionOrderShift(state, orderId, shift) {
   const session = editableSession(state);
   if (!session.orderIds.includes(orderId) || !validShift(shift) || !shift) throw new Error("Chọn một ca hợp lệ cho đơn hàng.");
   if (session.legs[orderId]?.completedAt) throw new Error("Không thể đổi ca của điểm đã giao.");
+  const shifts = { ...session.shifts, [orderId]: shift };
+  const orderIds = sortPendingByShift([...session.orderIds.filter(id => id !== orderId), orderId], shifts, session.legs);
   return {
     ...state,
-    sessions: state.sessions.map(item => item.id === session.id ? { ...item, shifts: { ...item.shifts, [orderId]: shift } } : item)
+    sessions: state.sessions.map(item => item.id === session.id ? { ...item, shifts, orderIds } : item)
   };
+}
+
+export function reorderOrderInSession(state, orderId, targetIndex) {
+  const session = editableSession(state);
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= session.orderIds.length) throw new Error("Không thể đổi thứ tự điểm giao.");
+  const completedCount = session.orderIds.filter(id => session.legs[id]?.completedAt).length;
+  const index = session.orderIds.indexOf(orderId);
+  if (index < 0) throw new Error("Đơn hàng không có trong phiên giao hàng.");
+  if (index < completedCount) throw new Error("Không thể di chuyển điểm đã giao.");
+  if (targetIndex < completedCount) return state;
+  if (index === targetIndex) return state;
+  if (session.shifts?.[session.orderIds[targetIndex]] !== session.shifts?.[orderId]) throw new Error("Chỉ có thể sắp xếp đơn trong cùng một ca.");
+  const orderIds = [...session.orderIds];
+  orderIds.splice(index, 1);
+  orderIds.splice(targetIndex, 0, orderId);
+  return { ...state, sessions: state.sessions.map(item => item.id === session.id ? { ...item, orderIds } : item) };
 }
 
 export function moveOrderInSession(state, orderId, offset) {
   const session = editableSession(state);
   if (![-1, 1].includes(offset)) throw new Error("Không thể đổi thứ tự điểm giao.");
-  const completedCount = session.orderIds.filter(id => session.legs[id]?.completedAt).length;
   const index = session.orderIds.indexOf(orderId);
-  const target = index + offset;
-  if (index < completedCount || target < completedCount || target >= session.orderIds.length) return state;
-  const orderIds = [...session.orderIds];
-  [orderIds[index], orderIds[target]] = [orderIds[target], orderIds[index]];
-  return { ...state, sessions: state.sessions.map(item => item.id === session.id ? { ...item, orderIds } : item) };
+  const targetIndex = index + offset;
+  const completedCount = session.orderIds.filter(id => session.legs[id]?.completedAt).length;
+  if (index < completedCount || targetIndex < completedCount || targetIndex < 0 || targetIndex >= session.orderIds.length) return state;
+  if (session.shifts?.[session.orderIds[targetIndex]] !== session.shifts?.[orderId]) return state;
+  return reorderOrderInSession(state, orderId, targetIndex);
 }
 
 export function markDelivered(state, orderId, deliveredAt = Date.now()) {
@@ -304,7 +334,7 @@ export function reopenDeliveredOrder(state, orderId, deliveryStatus, shift, reop
       ...state,
       sessions: state.sessions.map(item => item.id === current.id ? {
         ...item,
-        orderIds: [...orderIds, orderId],
+        orderIds: sortPendingByShift([...orderIds, orderId], shifts, legs),
         legs,
         stopStarts,
         shifts,
@@ -326,7 +356,7 @@ export function reopenDeliveredOrder(state, orderId, deliveryStatus, shift, reop
       sessions: state.sessions.map(item => item.id === oldSession.id ? {
         ...item,
         status: "active",
-        orderIds,
+        orderIds: sortPendingByShift(orderIds, { ...oldSession.shifts, [orderId]: shift }, legs),
         legs,
         shifts: { ...item.shifts, [orderId]: shift },
         stopStarts: { ...item.stopStarts, [orderId]: reopenedAt },
@@ -347,7 +377,7 @@ export function reopenDeliveredOrder(state, orderId, deliveryStatus, shift, reop
 
 export function getSessionStats(state, sessionId) {
   const session = state.sessions.find(item => item.id === sessionId);
-  if (!session) return { cashCollected: 0, transferCollected: 0, remainingCount: 0, totalValue: 0, shifts: [] };
+  if (!session) return { cashCollected: 0, transferCollected: 0, remainingCount: 0, totalValue: 0, amountToCollect: 0, shifts: [] };
   const orders = session.orderIds.map(id => getOrder(state, id)).filter(Boolean);
   const payments = orders.flatMap(order => (order.payments || []).filter(payment => payment.sessionId === session.id));
   const stopIsDone = id => Boolean(session.legs[id]?.completedAt);
@@ -365,6 +395,7 @@ export function getSessionStats(state, sessionId) {
     transferCollected: payments.filter(payment => payment.method === "Chuyển khoản").reduce((sum, payment) => sum + payment.amount, 0),
     remainingCount: session.status === "cancelled" ? 0 : orders.filter(order => !stopIsDone(order.id)).length,
     totalValue: orders.reduce((sum, order) => sum + order.total, 0),
+    amountToCollect: orders.reduce((sum, order) => sum + dueAmount(order), 0),
     shifts: shiftStats
   };
 }

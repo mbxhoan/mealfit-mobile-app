@@ -12,6 +12,7 @@ import {
   moveOrderInSession,
   normalizeState,
   pauseSession,
+  reorderOrderInSession,
   removeOrderFromSession,
   reopenDeliveredOrder,
   resumeSession,
@@ -57,16 +58,20 @@ test("payment records only the remainder and tags collections made in an active 
   assert.equal(order(route, "B").payments.at(-1).sessionId, session(route).id);
 });
 
-test("new session starts as unstarted, supports per-stop shifts and route edits", () => {
-  let state = createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000);
+test("new session groups stops by shift and keeps route edits inside each shift", () => {
+  let state = createSession(seed(), ["B", "A"], { A: "Sáng", B: "Chiều" }, 1000);
   assert.equal(session(state).status, "notStarted");
   assert.equal(order(state, "A").deliveryStatus, "Đang giao hàng");
   state = addOrdersToSession(state, ["C"], "Tối");
   state = moveOrderInSession(state, "C", -1);
-  assert.deepEqual(session(state).orderIds, ["A", "C", "B"]);
+  assert.deepEqual(session(state).orderIds, ["A", "B", "C"]);
   assert.equal(session(state).shifts.C, "Tối");
+  state = setSessionOrderShift(state, "A", "Tối");
+  assert.deepEqual(session(state).orderIds, ["B", "C", "A"]);
   state = setSessionOrderShift(state, "C", "Chiều");
   assert.equal(session(state).shifts.C, "Chiều");
+  assert.deepEqual(session(state).orderIds, ["B", "C", "A"]);
+  assert.throws(() => reorderOrderInSession(state, "C", 2), /cùng một ca/);
   state = removeOrderFromSession(state, "B");
   assert.equal(order(state, "B").deliveryStatus, "Chưa giao hàng");
   state = startSession(state, 2000);
@@ -75,6 +80,27 @@ test("new session starts as unstarted, supports per-stop shifts and route edits"
   assert.throws(() => createSession(state, ["B"], { B: "Sáng" }, 3000), /Đã có một phiên/);
   state = addOrdersToSession(state, ["B"], "Sáng");
   assert.equal(order(state, "B").deliveryStatus, "Đang giao hàng");
+  assert.deepEqual(session(state).orderIds, ["B", "C", "A"]);
+});
+
+test("route reordering stays within a shift and cannot cross completed stops", () => {
+  let state = createSession(seed(), ["A", "B", "C"], { A: "Sáng", B: "Sáng", C: "Sáng" }, 1000);
+  state = reorderOrderInSession(state, "C", 0);
+  assert.deepEqual(session(state).orderIds, ["C", "A", "B"]);
+  state = startSession(state, 2000);
+  state = markDelivered(state, "C", 3000);
+  const unchanged = reorderOrderInSession(state, "B", 0);
+  assert.equal(unchanged, state);
+  assert.throws(() => reorderOrderInSession(state, "C", 2), /điểm đã giao/);
+  state = reorderOrderInSession(state, "B", 1);
+  assert.deepEqual(session(state).orderIds, ["C", "B", "A"]);
+});
+
+test("legacy route normalization preserves completed history and sorts the open stops by shift", () => {
+  const state = seed();
+  state.sessions = [{ id: "old", status: "active", orderIds: ["A", "B", "C"], shifts: { A: "Sáng", B: "Tối", C: "Chiều" }, legs: { A: { completedAt: 1500 } } }];
+  state.activeSessionId = "old";
+  assert.deepEqual(normalizeState(state).sessions[0].orderIds, ["A", "C", "B"]);
 });
 
 test("pause locks delivery edits and excludes paused time from route legs", () => {
@@ -83,6 +109,7 @@ test("pause locks delivery edits and excludes paused time from route legs", () =
   assert.equal(session(state).status, "paused");
   assert.throws(() => markPaid(state, "A", "Tiền mặt", 13_000));
   assert.throws(() => addOrdersToSession(state, ["C"], "Sáng"));
+  assert.throws(() => reorderOrderInSession(state, "B", 0));
   assert.throws(() => markDelivered(state, "A", 13_000));
   state = resumeSession(state, 42_000);
   state = markDelivered(state, "A", 52_000);
@@ -102,7 +129,12 @@ test("cancel returns unfinished orders to pending and keeps completed stops", ()
 });
 
 test("route stats count session cash and transfer collections, route value and completed shifts", () => {
-  let state = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  let state = createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000);
+  const beforeStart = getSessionStats(state, session(state).id);
+  assert.equal(beforeStart.cashCollected, 0);
+  assert.equal(beforeStart.transferCollected, 0);
+  assert.equal(beforeStart.amountToCollect, 180_000);
+  state = startSession(state, 2000);
   state = markPaid(state, "A", "Tiền mặt", 3000);
   state = markDelivered(state, "A", 4000);
   state = markPaid(state, "B", "Chuyển khoản", 5000);
@@ -112,6 +144,7 @@ test("route stats count session cash and transfer collections, route value and c
   assert.equal(stats.transferCollected, 80_000);
   assert.equal(stats.remainingCount, 0);
   assert.equal(stats.totalValue, 200_000);
+  assert.equal(stats.amountToCollect, 0);
   assert.deepEqual(stats.shifts.map(item => item.done), [true, true]);
 });
 
