@@ -13,6 +13,7 @@ import {
   reorderOrderInSession,
   reopenDeliveredOrder,
   resumeSession,
+  setOrderNote,
   setSessionOrderShift,
   SHIFT_OPTIONS,
   startSession,
@@ -88,6 +89,7 @@ let modal = null;
 let sessionDefaultShift = "Sáng";
 let addOrdersShift = "Sáng";
 let routeAnnouncement = "";
+let routeNoteOrderId = null;
 let routeDrag = null;
 let routeDragFrame = null;
 let toastTimer = null;
@@ -210,13 +212,11 @@ function homeScreen() {
   ];
   return `<main class="page">
     <p class="home-date">${dateLabel(Date.now())} · Dữ liệu trình diễn</p>
-    <div class="page-heading"><div><h1>Xin chào</h1><p>${safe(roleNames[role])}, hôm nay mình xử lý đơn nào?</p></div></div>
     <div class="home-summary" aria-label="Tóm tắt đơn hàng">
       <div class="summary-cell"><span class="summary-number">${counts.pending}</span><span class="summary-label">Chưa giao</span></div>
       <div class="summary-cell"><span class="summary-number">${counts.transit}</span><span class="summary-label">Đang giao</span></div>
       <div class="summary-cell"><span class="summary-number">${counts.delivered}</span><span class="summary-label">Đã giao</span></div>
     </div>
-    <h2 class="section-title">Menu</h2>
     <div class="menu-grid">${menu.map(item => `<button class="menu-card" data-action="open-${item.action}"><span class="menu-icon">${icon(item.icon, 23)}</span><span><span class="menu-label">${item.title}</span><span class="menu-count">${item.count}</span></span></button>`).join("")}</div>
     ${activeSession() && role === "shipper" ? `<div class="divider"></div><button class="button full" data-action="open-session">Tiếp tục phiên giao hàng ${icon("chevron", 18)}</button>` : ""}
   </main>`;
@@ -238,14 +238,14 @@ function orderCard(order, clickable = true, selected = false) {
 function ordersScreen() {
   const filters = ["Tất cả", "Chưa giao hàng", "Đang giao hàng", "Đã giao hàng"];
   const orders = orderFilter === "Tất cả" ? state.orders : state.orders.filter(order => order.deliveryStatus === orderFilter);
-  return `<main class="page"><div class="page-heading"><div><h1>Đơn hàng</h1><p>Danh sách đơn mẫu, chỉ xem</p></div></div>
+  return `<main class="page">
     <div class="filter-row">${filters.map(filter => `<button class="filter-chip ${orderFilter === filter ? "active" : ""}" data-action="filter-orders" data-filter="${safe(filter)}">${safe(filter)}</button>`).join("")}</div>
     <div class="list">${orders.length ? orders.map(order => orderCard(order)).join("") : '<div class="empty-state"><strong>Chưa có đơn trong mục này</strong>Đơn hàng sẽ xuất hiện tại đây khi có dữ liệu.</div>'}</div>
   </main>`;
 }
 
 function dishesScreen() {
-  return `<main class="page"><div class="page-heading"><div><h1>Món</h1><p>Bảng giá mẫu theo khẩu phần</p></div></div>
+  return `<main class="page">
     <div class="detail-card"><div class="detail-section"><h2>Tên món · khẩu phần</h2>${dishes.map(dish => `<div class="dish-row"><div><div class="dish-name">${safe(dish.name)}</div><div class="dish-meta">${safe(dish.weight)}${isStaff() ? ` · Vốn ${money(dish.cost)}` : ""}</div></div><div class="dish-price">${money(dish.sale)}${isStaff() ? `<small class="profit">Lãi ${dish.margin.toFixed(1)}%</small>` : ""}</div></div>`).join("")}</div></div>
     <p class="fine-print" style="margin-top:12px">Giá tham khảo từ danh mục món trong workbook. Dữ liệu trong prototype không đồng bộ với file.</p>
   </main>`;
@@ -296,7 +296,7 @@ function orderDetailScreen(view) {
 
 function staffSessionsScreen() {
   const sessions = [...state.sessions].sort((a, b) => (b.startedAt || b.createdAt || 0) - (a.startedAt || a.createdAt || 0));
-  return `<main class="page"><div class="page-heading"><div><h1>Phiên giao hàng</h1><p>Theo dõi tiến độ các tuyến</p></div></div>
+  return `<main class="page">
     <div class="list">${sessions.map(session => {
       const stats = getSessionStats(state, session.id);
       const timestamp = session.startedAt || session.createdAt;
@@ -310,11 +310,11 @@ function singleDeliveryScreen() {
   const pending = state.orders.filter(order => order.deliveryStatus === "Chưa giao hàng");
   const transit = state.orders.filter(order => order.deliveryStatus === "Đang giao hàng" && !order.sessionId);
   const selected = orderById(selectedOrderId);
-  return `<main class="page"><div class="page-heading"><div><h1>Giao lẻ</h1><p>Chọn đơn và ghi phí ship thực tế</p></div></div>
+  return `<main class="page">
     <button class="button secondary full" style="margin-bottom:18px" data-action="open-session-overview">Tình hình phiên giao hàng ${icon("chevron", 18)}</button>
     <h2 class="section-title" style="margin-top:0">Đơn chưa giao <small>${pending.length} đơn</small></h2>
     <div class="list">${pending.map(order => `<button class="list-card select-order ${selectedOrderId === order.id ? "selected" : ""}" aria-pressed="${selectedOrderId === order.id}" data-action="select-single-order" data-id="${safe(order.id)}"><span class="checkmark" aria-hidden="true"></span><span style="flex:1"><span class="card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(dueAmount(order) ? "Chưa thanh toán" : "Đã thanh toán", "payment")}</span><span class="order-customer">${safe(order.customer)}</span><span class="order-address">${addressLabel(order.address)}</span><span class="order-subline">Tổng hiện tại ${money(order.total)}${dueAmount(order) ? ` · Còn thu ${money(dueAmount(order))}` : ""}</span></span></button>`).join("") || '<div class="empty-state">Không còn đơn đang chờ giao.</div>'}</div>
-    ${selected ? `<form id="single-form" class="detail-card" style="margin-top:16px;padding:16px"><h2 style="margin:0 0 6px">Bắt đầu giao · ${safe(selected.id)}</h2><div class="form-field"><label for="delivery-method">Hình thức giao hàng</label><select class="select" id="delivery-method" name="method">${["Be", "GreenSM", "Grab", "Shipper"].map((method, index) => `<option ${index === 0 ? "selected" : ""}>${method}</option>`).join("")}</select></div><div class="form-field"><label for="shipping-fee">Phí ship thực tế</label><input class="input" id="shipping-fee" name="shippingFee" type="number" min="0" step="1000" inputmode="numeric" value="${selected.shippingFee}" required /></div><button class="button full" type="submit">Bắt đầu giao ${icon("chevron", 18)}</button></form>` : ""}
+    ${selected ? `<form id="single-form" class="detail-card" style="margin-top:16px;padding:16px"><div class="form-field"><label for="delivery-method">Hình thức giao hàng</label><select class="select" id="delivery-method" name="method">${["Be", "GreenSM", "Grab", "Shipper"].map((method, index) => `<option ${index === 0 ? "selected" : ""}>${method}</option>`).join("")}</select></div><div class="form-field"><label for="shipping-fee">Phí ship thực tế</label><input class="input" id="shipping-fee" name="shippingFee" type="number" min="0" step="1000" inputmode="numeric" value="${selected.shippingFee}" required /></div><button class="button full" type="submit">Bắt đầu giao ${icon("chevron", 18)}</button></form>` : ""}
     <h2 class="section-title">Đang giao <small>${transit.length} đơn giao lẻ</small></h2>
     <div class="list">${transit.map(order => `<div class="list-card"><div class="card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(order.deliveryStatus)}</div><p class="order-customer">${safe(order.customer)}</p><p class="order-address">${addressLabel(order.address)}</p><div class="card-bottom"><span><span class="money">${money(order.total)}</span><small class="money-sub">${safe(order.deliveryMethod || "")}</small></span><div class="button-row" style="width:auto"><button class="button secondary small" data-action="open-order" data-id="${safe(order.id)}">Chi tiết</button><button class="button small" data-action="deliver-order" data-id="${safe(order.id)}">Đã giao</button></div></div></div>`).join("") || '<div class="empty-state">Chưa có đơn giao lẻ nào đang đi.</div>'}</div>
   </main>`;
@@ -327,8 +327,11 @@ function sessionCreateScreen() {
   const selectedIds = window._sessionSelection || [];
   const shifts = window._sessionShifts || {};
   const shiftOptions = (selected, id) => `<select class="shift-select" aria-label="Ca giao đơn ${safe(id)}" data-shift-selection="${safe(id)}">${SHIFT_OPTIONS.map(shift => `<option ${shift === selected ? "selected" : ""}>${shift}</option>`).join("")}</select>`;
-  const noteEditor = (flow, order) => `<div class="selection-note"><label for="${flow}-note-${safe(order.id)}">Yêu cầu giao hàng</label><textarea id="${flow}-note-${safe(order.id)}" data-selection-note="${safe(order.id)}" data-note-flow="${flow}" rows="2" placeholder="Ví dụ: Giao trước 10:00, gọi trước khi đến">${safe((flow === "session" ? window._sessionNotes : window._addNotes)?.[order.id] ?? order.note ?? "")}</textarea>${((flow === "session" ? window._sessionNotes : window._addNotes)?.[order.id] ?? order.note) ? `<button class="note-clear" type="button" data-action="clear-selection-note" data-id="${safe(order.id)}" data-flow="${flow}">Xóa ghi chú</button>` : ""}</div>`;
-  return `<main class="page"><div class="page-heading"><div><h1>Tạo phiên</h1><p>Chọn đơn hàng cho tuyến giao này</p></div></div>
+  const noteEditor = (flow, order) => {
+    const value = (flow === "session" ? window._sessionNotes : window._addNotes)?.[order.id] ?? order.note ?? "";
+    return `<div class="selection-note"><label for="${flow}-note-${safe(order.id)}">Ghi chú đơn hàng</label><textarea id="${flow}-note-${safe(order.id)}" data-selection-note="${safe(order.id)}" data-note-flow="${flow}" rows="2" placeholder="Ví dụ: Giao trước 10:00, gọi trước khi đến">${safe(value)}</textarea><button class="note-clear" type="button" data-action="clear-selection-note" data-id="${safe(order.id)}" data-flow="${flow}" ${value.trim() ? "" : "disabled"}>Xóa ghi chú</button></div>`;
+  };
+  return `<main class="page">
     <div class="form-field"><label for="default-shift">Ca mặc định</label><select class="select" id="default-shift">${SHIFT_OPTIONS.map(shift => `<option ${shift === sessionDefaultShift ? "selected" : ""}>${shift}</option>`).join("")}</select></div>
     <div class="list">${pending.map(order => {
       const selected = selectedIds.includes(order.id);
@@ -365,12 +368,16 @@ function sessionScreen() {
   const shiftSelect = order => editable && !isDone(order)
     ? `<select class="shift-select stop-shift" aria-label="Ca giao đơn ${safe(order.id)}" data-session-shift="${safe(order.id)}">${SHIFT_OPTIONS.map(shift => `<option ${shift === session.shifts?.[order.id] ? "selected" : ""}>${shift}</option>`).join("")}</select>`
     : `<span class="shift-label">${safe(session.shifts?.[order.id] || "Chưa phân ca")}</span>`;
+  const noteTools = order => routeNoteOrderId === order.id
+    ? `<div class="route-note-editor"><label for="route-note-${safe(order.id)}">Ghi chú đơn hàng</label><textarea id="route-note-${safe(order.id)}" data-route-note rows="2" placeholder="Ví dụ: Giao trước 10:00, gọi trước khi đến">${safe(order.note || "")}</textarea><div class="route-note-buttons"><button class="button small" data-action="save-route-note" data-id="${safe(order.id)}">Lưu</button><button class="button secondary small" data-action="clear-route-note" data-id="${safe(order.id)}" ${order.note ? "" : "disabled"}>Xóa</button><button class="button secondary small" data-action="cancel-route-note">Hủy</button></div></div>`
+    : `<button class="route-note-toggle" data-action="edit-route-note" data-id="${safe(order.id)}">${order.note ? "Sửa ghi chú" : "+ Ghi chú"}</button>`;
   const stopCard = (order, index) => {
     const done = isDone(order);
     const currentStop = order.id === nextId;
     const leg = session.legs[order.id];
     return `<div class="route-stop ${done ? "done" : currentStop ? "current" : ""}" data-order-id="${safe(order.id)}" data-completed="${done}" data-shift="${safe(session.shifts?.[order.id] || "")}"><div class="stop-mark">${done ? icon("check", 17) : index + 1}</div><div class="stop-card" data-action="open-order-session" data-id="${safe(order.id)}" tabindex="-1">
       <button class="stop-open" data-action="open-order-session" data-id="${safe(order.id)}"><span class="stop-primary"><span class="stop-title">${safe(order.customer)} <small>· ${safe(order.id)}</small></span><span class="stop-total">${money(order.total)}<small class="money-sub">${dueAmount(order) ? `Thu ${money(dueAmount(order))}` : "Đã thanh toán"}</small></span></span><span class="stop-caption">${addressLabel(order.address)}</span>${order.note ? `<span class="stop-note">${safe(order.note)}</span>` : ""}</button>
+      ${editable && !done ? noteTools(order) : ""}
       <div class="stop-bottom">${shiftSelect(order)}<div class="stop-tools"><a class="stop-call" href="tel:${safe(order.phone.replace(/\D/g, ""))}" aria-label="Gọi ${safe(order.customer)}">${icon("phone", 18)}</a>${editable && !done ? `<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)} trong ca ${safe(session.shifts?.[order.id] || "chưa phân ca")}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button>` : ""}</div></div>
       ${leg ? `<div class="leg-time">${icon("clock", 14)} Chặng này: ${elapsedLabel(leg.durationMs)} · ${timeLabel(leg.completedAt)}</div>` : ""}
       ${!done && session.status === "paused" ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? '<button class="button secondary small" disabled>Đã thanh toán</button>' : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" disabled>Đã giao hàng</button></div>` : ""}
@@ -387,7 +394,7 @@ function sessionScreen() {
   const unassigned = session.orderIds.filter(id => !session.shifts?.[id]).length;
   const orderListCard = (order, index) => {
     const done = isDone(order);
-    return `<div class="session-order ${done ? "done" : ""}" data-order-id="${safe(order.id)}" data-completed="${done}" data-shift="${safe(session.shifts?.[order.id] || "")}"><button class="session-order-open" data-action="open-order-session" data-id="${safe(order.id)}"><span class="session-order-top"><strong>${index + 1}. ${safe(order.customer)} · ${safe(order.id)}</strong>${statusBadge(routeStatus(order))}</span><span class="order-address">${addressLabel(order.address)}</span>${order.note ? `<span class="order-address">${safe(order.note)}</span>` : ""}<span class="session-order-total">${money(order.total)} · ${dueAmount(order) ? `Còn thu ${money(dueAmount(order))}` : "Đã thanh toán"}</span></button>${editable && !done ? `<div class="session-order-tools"><button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)} trong ca ${safe(session.shifts?.[order.id] || "chưa phân ca")}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button></div>` : ""}</div>`;
+    return `<div class="session-order ${done ? "done" : ""}" data-order-id="${safe(order.id)}" data-completed="${done}" data-shift="${safe(session.shifts?.[order.id] || "")}"><button class="session-order-open" data-action="open-order-session" data-id="${safe(order.id)}"><span class="session-order-top"><strong>${index + 1}. ${safe(order.customer)} · ${safe(order.id)}</strong>${statusBadge(routeStatus(order))}</span><span class="order-address">${addressLabel(order.address)}</span>${order.note ? `<span class="order-address">${safe(order.note)}</span>` : ""}<span class="session-order-total">${money(order.total)} · ${dueAmount(order) ? `Còn thu ${money(dueAmount(order))}` : "Đã thanh toán"}</span></button>${editable && !done ? `<div class="session-order-tools"><button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)} trong ca ${safe(session.shifts?.[order.id] || "chưa phân ca")}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button></div>${noteTools(order)}` : ""}</div>`;
   };
   const groupedOrders = [...SHIFT_OPTIONS, "Chưa phân ca"].map(shift => ({
     shift,
@@ -419,7 +426,7 @@ function addOrdersScreen() {
   if (role !== "shipper" || !session || !["active", "notStarted"].includes(session.status)) return `<main class="page"><div class="empty-state">Tiếp tục phiên trước khi thêm đơn.</div></main>`;
   const pending = state.orders.filter(order => order.deliveryStatus === "Chưa giao hàng");
   const selectedIds = window._addSelection || [];
-  return `<main class="page"><div class="page-heading"><div><h1>Thêm đơn</h1><p>Đơn mới sẽ được nối cuối tuyến</p></div></div>
+  return `<main class="page">
     <div class="form-field"><label for="add-shift">Ca giao</label><select class="select" id="add-shift">${SHIFT_OPTIONS.map(shift => `<option ${shift === addOrdersShift ? "selected" : ""}>${shift}</option>`).join("")}</select></div>
     <div class="list">${pending.map(order => {
       const selected = selectedIds.includes(order.id);
@@ -832,6 +839,18 @@ app.addEventListener("click", async event => {
     else window._addNotes = notes;
     render(); return;
   }
+  if (action === "edit-route-note") { routeNoteOrderId = id; render(); return; }
+  if (action === "cancel-route-note") { routeNoteOrderId = null; render(); return; }
+  if (["save-route-note", "clear-route-note"].includes(action)) {
+    const session = activeSession();
+    if (role !== "shipper" || !session || !["active", "notStarted"].includes(session.status) || !session.orderIds.includes(id)) { flash("Không thể sửa ghi chú trong phiên này."); return; }
+    try {
+      const note = action === "clear-route-note" ? "" : document.querySelector("[data-route-note]")?.value || "";
+      routeNoteOrderId = null;
+      updateState(setOrderNote(state, id, note), note.trim() ? "Đã lưu ghi chú đơn hàng." : "Đã xóa ghi chú đơn hàng.");
+    } catch (error) { flash(error.message); }
+    return;
+  }
   if (action === "create-session") {
     if (role !== "shipper") { flash("Chỉ shipper có thể tạo phiên giao hàng."); return; }
     try {
@@ -1022,6 +1041,8 @@ app.addEventListener("input", event => {
   notes[event.target.dataset.selectionNote] = event.target.value;
   if (event.target.dataset.noteFlow === "session") window._sessionNotes = notes;
   else window._addNotes = notes;
+  const clearButton = event.target.parentElement.querySelector(".note-clear");
+  if (clearButton) clearButton.disabled = !event.target.value.trim();
 });
 
 app.addEventListener("submit", event => {

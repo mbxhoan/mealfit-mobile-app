@@ -56,6 +56,11 @@ const getOrder = (state, orderId) => state.orders.find(order => order.id === ord
 const getActiveSession = state => state.sessions.find(session => session.id === state.activeSessionId && OPEN_SESSION_STATUSES.includes(session.status));
 const validShift = shift => shift == null || SHIFT_OPTIONS.includes(shift);
 
+export function setOrderNote(state, orderId, note) {
+  if (!getOrder(state, orderId)) throw new Error("Không tìm thấy đơn hàng.");
+  return updateOrder(state, orderId, order => ({ ...order, note: String(note ?? "").trim() }));
+}
+
 function editableSession(state) {
   const session = getActiveSession(state);
   if (!session || session.status === "paused") throw new Error("Tiếp tục phiên trước khi chỉnh sửa lộ trình.");

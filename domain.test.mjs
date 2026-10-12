@@ -16,6 +16,7 @@ import {
   removeOrderFromSession,
   reopenDeliveredOrder,
   resumeSession,
+  setOrderNote,
   setSessionOrderShift,
   startSession,
   startSingleDelivery
@@ -108,6 +109,13 @@ test("session creation and adding orders save, update, and clear delivery notes"
   assert.equal(order(state, "B").note, "Gọi trước khi đến");
   state = addOrdersToSession(state, ["C"], "Tối", { C: "" });
   assert.equal(order(state, "C").note, "");
+});
+
+test("order notes can be edited and removed from an active order", () => {
+  let state = setOrderNote(seed(), "A", "  Gọi trước khi đến  ");
+  assert.equal(order(state, "A").note, "Gọi trước khi đến");
+  state = setOrderNote(state, "A", "");
+  assert.equal(order(state, "A").note, "");
 });
 
 test("route reordering stays within a shift and cannot cross completed stops", () => {
