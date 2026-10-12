@@ -5,6 +5,15 @@ export const MAX_PHOTOS_PER_ORDER = 5;
 
 const OPEN_SESSION_STATUSES = ["notStarted", "active", "paused"];
 
+export function classifyNetworkSignal(online, connection = {}) {
+  if (!online || connection.type === "none") return "offline";
+  return ["slow-2g", "2g", "3g"].includes(connection.effectiveType)
+    || (Number.isFinite(connection.downlink) && connection.downlink < 1.5)
+    || (Number.isFinite(connection.rtt) && connection.rtt > 500)
+    ? "weak"
+    : "stable";
+}
+
 export function allowedPhotoCount(existingCount, requestedCount) {
   return Math.max(0, Math.min(Math.floor(requestedCount), MAX_PHOTOS_PER_ORDER - Math.floor(existingCount)));
 }
@@ -61,6 +70,24 @@ export function setOrderNote(state, orderId, note) {
   return updateOrder(state, orderId, order => ({ ...order, note: String(note ?? "").trim() }));
 }
 
+export function normalizeGoogleMapsLink(link) {
+  const value = String(link ?? "").trim();
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    const googleMapsHost = ["maps.app.goo.gl", "google.com", "www.google.com", "maps.google.com"].includes(url.hostname);
+    const hasMapPath = /\/maps(?:\/|$)/.test(url.pathname) || ["q", "query", "ll", "daddr"].some(key => url.searchParams.has(key));
+    if (url.protocol === "https:" && !url.username && !url.password && !url.port && googleMapsHost && (url.hostname === "maps.app.goo.gl" || hasMapPath)) return value;
+  } catch {}
+  throw new Error("Nhập link Google Maps hợp lệ bắt đầu bằng https://.");
+}
+
+export function setOrderMapsLink(state, orderId, link) {
+  if (!getOrder(state, orderId)) throw new Error("Không tìm thấy đơn hàng.");
+  const mapsLink = normalizeGoogleMapsLink(link);
+  return updateOrder(state, orderId, order => ({ ...order, mapsLink }));
+}
+
 function editableSession(state) {
   const session = getActiveSession(state);
   if (!session || session.status === "paused") throw new Error("Tiếp tục phiên trước khi chỉnh sửa lộ trình.");
@@ -114,7 +141,7 @@ export function markPaid(state, orderId, method, paidAt = Date.now()) {
   }));
 }
 
-export function createSession(state, orderIds, shiftsByOrder = {}, createdAt = Date.now(), notesByOrder = {}) {
+export function createSession(state, orderIds, shiftsByOrder = {}, createdAt = Date.now(), notesByOrder = {}, mapsLinksByOrder = {}) {
   if (getActiveSession(state)) throw new Error("Đã có một phiên giao hàng đang hoạt động.");
   const ids = [...new Set(orderIds)];
   if (!ids.length) throw new Error("Chọn ít nhất một đơn hàng.");
@@ -124,6 +151,7 @@ export function createSession(state, orderIds, shiftsByOrder = {}, createdAt = D
     if (!validShift(shift)) throw new Error("Chọn ca sáng, chiều hoặc tối cho mỗi đơn.");
     return [id, shift];
   }));
+  const mapsLinks = Object.fromEntries(ids.filter(id => Object.hasOwn(mapsLinksByOrder, id)).map(id => [id, normalizeGoogleMapsLink(mapsLinksByOrder[id])]));
   const session = {
     id: `PS-${createdAt}-${state.sessions.length + 1}`,
     status: "notStarted",
@@ -142,7 +170,7 @@ export function createSession(state, orderIds, shiftsByOrder = {}, createdAt = D
     activeSessionId: session.id,
     sessions: [...state.sessions, session],
     orders: state.orders.map(order => ids.includes(order.id)
-      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
+      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), ...(Object.hasOwn(mapsLinks, order.id) ? { mapsLink: mapsLinks[order.id] } : {}), deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
       : order)
   };
 }
@@ -194,12 +222,13 @@ export function cancelSession(state, cancelledAt = Date.now()) {
   };
 }
 
-export function addOrdersToSession(state, orderIds, shift = null, notesByOrder = {}) {
+export function addOrdersToSession(state, orderIds, shift = null, notesByOrder = {}, mapsLinksByOrder = {}) {
   const session = editableSession(state);
   if (!validShift(shift) || !shift) throw new Error("Chọn ca cho các đơn được thêm.");
   const ids = [...new Set(orderIds)].filter(id => !session.orderIds.includes(id));
   if (!ids.length) throw new Error("Chọn đơn chưa có trong phiên.");
   if (ids.some(id => getOrder(state, id)?.deliveryStatus !== "Chưa giao hàng")) throw new Error("Một số đơn không còn ở trạng thái chưa giao.");
+  const mapsLinks = Object.fromEntries(ids.filter(id => Object.hasOwn(mapsLinksByOrder, id)).map(id => [id, normalizeGoogleMapsLink(mapsLinksByOrder[id])]));
   const stopStarts = { ...session.stopStarts };
   ids.forEach(id => delete stopStarts[id]);
   return {
@@ -211,7 +240,7 @@ export function addOrdersToSession(state, orderIds, shift = null, notesByOrder =
       stopStarts
     } : item),
     orders: state.orders.map(order => ids.includes(order.id)
-      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
+      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), ...(Object.hasOwn(mapsLinks, order.id) ? { mapsLink: mapsLinks[order.id] } : {}), deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
       : order)
   };
 }

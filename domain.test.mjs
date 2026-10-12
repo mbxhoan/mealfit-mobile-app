@@ -4,18 +4,21 @@ import {
   addOrdersToSession,
   allowedPhotoCount,
   cancelSession,
+  classifyNetworkSignal,
   createSession,
   dueAmount,
   getSessionStats,
   markDelivered,
   markPaid,
   moveOrderInSession,
+  normalizeGoogleMapsLink,
   normalizeState,
   pauseSession,
   reorderOrderInSession,
   removeOrderFromSession,
   reopenDeliveredOrder,
   resumeSession,
+  setOrderMapsLink,
   setOrderNote,
   setSessionOrderShift,
   startSession,
@@ -34,6 +37,16 @@ const seed = () => ({
 
 const order = (state, id) => state.orders.find(item => item.id === id);
 const session = state => state.sessions[0];
+
+test("network signal maps offline and weak browser readings to semantic states", () => {
+  assert.equal(classifyNetworkSignal(false, { effectiveType: "4g" }), "offline");
+  assert.equal(classifyNetworkSignal(true, { type: "none" }), "offline");
+  assert.equal(classifyNetworkSignal(true, { effectiveType: "2g" }), "weak");
+  assert.equal(classifyNetworkSignal(true, { downlink: 1 }), "weak");
+  assert.equal(classifyNetworkSignal(true, { rtt: 700 }), "weak");
+  assert.equal(classifyNetworkSignal(true, { effectiveType: "4g", downlink: 20, rtt: 40 }), "stable");
+  assert.equal(classifyNetworkSignal(true), "stable");
+});
 
 test("single delivery validates input and records actual shipping fee", () => {
   const next = startSingleDelivery(seed(), "A", "Grab", 25_000);
@@ -99,16 +112,19 @@ test("new session groups stops by shift and keeps route edits inside each shift"
   assert.deepEqual(session(state).orderIds, ["B", "C", "A"]);
 });
 
-test("session creation and adding orders save, update, and clear delivery notes", () => {
+test("session creation and adding orders save, update, and clear delivery notes and map links", () => {
   const initial = seed();
   initial.orders.find(item => item.id === "B").note = "Ghi chú cũ";
   initial.orders.find(item => item.id === "C").note = "Ghi chú cần xóa";
-  let state = createSession(initial, ["A"], { A: "Sáng" }, 1000, { A: "Giao trước 10:00" });
+  let state = createSession(initial, ["A"], { A: "Sáng" }, 1000, { A: "Giao trước 10:00" }, { A: "https://maps.app.goo.gl/mealfit-a" });
   assert.equal(order(state, "A").note, "Giao trước 10:00");
-  state = addOrdersToSession(state, ["B"], "Chiều", { B: "Gọi trước khi đến" });
+  assert.equal(order(state, "A").mapsLink, "https://maps.app.goo.gl/mealfit-a");
+  state = addOrdersToSession(state, ["B"], "Chiều", { B: "Gọi trước khi đến" }, { B: "https://www.google.com/maps/search/?api=1&query=10%20Nguyen%20Hue" });
   assert.equal(order(state, "B").note, "Gọi trước khi đến");
-  state = addOrdersToSession(state, ["C"], "Tối", { C: "" });
+  assert.equal(order(state, "B").mapsLink, "https://www.google.com/maps/search/?api=1&query=10%20Nguyen%20Hue");
+  state = addOrdersToSession(state, ["C"], "Tối", { C: "" }, { C: "" });
   assert.equal(order(state, "C").note, "");
+  assert.equal(order(state, "C").mapsLink, "");
 });
 
 test("order notes can be edited and removed from an active order", () => {
@@ -116,6 +132,22 @@ test("order notes can be edited and removed from an active order", () => {
   assert.equal(order(state, "A").note, "Gọi trước khi đến");
   state = setOrderNote(state, "A", "");
   assert.equal(order(state, "A").note, "");
+});
+
+test("Google Maps links accept supported destinations and reject unsafe or unrelated URLs", () => {
+  assert.equal(normalizeGoogleMapsLink("  https://maps.app.goo.gl/abc  "), "https://maps.app.goo.gl/abc");
+  assert.equal(normalizeGoogleMapsLink("https://www.google.com/maps/place/Mealfit"), "https://www.google.com/maps/place/Mealfit");
+  assert.equal(normalizeGoogleMapsLink(""), "");
+  assert.throws(() => normalizeGoogleMapsLink("javascript:alert(1)"), /Google Maps/);
+  assert.throws(() => normalizeGoogleMapsLink("https://example.com/maps"), /Google Maps/);
+  assert.throws(() => normalizeGoogleMapsLink("https://google.com:8080/maps"), /Google Maps/);
+  assert.throws(() => createSession(seed(), ["A"], { A: "Sáng" }, 1000, {}, { A: "https://example.com/maps" }), /Google Maps/);
+
+  let state = setOrderMapsLink(seed(), "A", "https://maps.app.goo.gl/abc");
+  assert.equal(order(state, "A").mapsLink, "https://maps.app.goo.gl/abc");
+  state = setOrderMapsLink(state, "A", "");
+  assert.equal(order(state, "A").mapsLink, "");
+  assert.throws(() => setOrderMapsLink(state, "missing", ""), /Không tìm thấy/);
 });
 
 test("route reordering stays within a shift and cannot cross completed stops", () => {

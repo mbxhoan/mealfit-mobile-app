@@ -52,6 +52,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .brand { display: inline-flex; align-items: center; gap: 9px; min-width: 0; }
 .brand img { display: block; width: 74px; height: 48px; object-fit: contain; }
 .topbar-tools { display: flex; align-items: center; gap: 8px; }
+.network-indicator { width: 32px; height: 32px; display: inline-grid; flex: 0 0 32px; place-items: center; border: 1px solid var(--line); border-radius: 11px; transition: color .16s ease, background-color .16s ease; }
+.network-indicator svg { width: 18px; height: 18px; stroke-width: 2.3; }
+.network-indicator.signal-stable { color: var(--green); background: var(--green-soft); }
+.network-indicator.signal-weak { color: #a66a00; background: #fff5dc; }
+.network-indicator.signal-offline { color: var(--red); background: #fff0f0; }
 .role-chip { padding: 8px 10px; background: var(--surface); border-radius: 999px; color: #4e5155; font-size: 12px; font-weight: 650; white-space: nowrap; }
 .icon-button {
   width: 44px; height: 44px; display: inline-grid; place-items: center;
@@ -132,6 +137,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .customer-line { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
 .customer-line strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .customer-phone { color: var(--phone-blue); font-size: 12px; font-weight: 650; text-decoration: none; white-space: nowrap; }
+.customer-address-line { display: flex; align-items: center; gap: 8px; }
+.customer-address-line .customer-address { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.maps-link-button { width: 40px; height: 40px; display: inline-grid; flex: 0 0 40px; place-items: center; border: 0; border-radius: 11px; background: var(--phone-blue); color: #fff; text-decoration: none; transition: transform .12s ease, filter .12s ease; }
+.maps-link-button:active { transform: scale(.95); filter: brightness(.9); }
 .customer-address { margin-top: 5px; color: #56595e; font-size: 11px; line-height: 1.4; }
 .customer-note { margin-top: 4px; color: var(--muted); font-size: 11px; }
 .detail-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 15px; padding: 7px 0; font-size: 13px; line-height: 1.45; }
@@ -173,11 +182,21 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .select-order { display: flex; gap: 12px; align-items: center; width: 100%; text-align: left; cursor: pointer; }
 .select-order.selected { border-color: var(--accent); box-shadow: 0 0 0 2px #f4511e1a; }
 .shift-selection-row { display: grid; gap: 7px; padding: 10px; }
-.shift-selection-row .select-order { padding: 4px; border: 0; background: transparent; }
+.shift-selection-row .select-order { align-items: flex-start; padding: 4px; border: 0; background: transparent; }
+.shift-selection-row .checkmark { margin-top: 3px; }
+.selection-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.selection-card-top, .selection-customer-line { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.selection-card-top .order-number { font-size: 11px; }
+.selection-card-top .status { min-height: 22px; padding: 3px 7px; font-size: 9px; }
+.selection-customer-line .order-customer { min-width: 0; display: block; margin: 0; overflow-wrap: anywhere; font-size: 12px; }
+.selection-price { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.selection-copy .order-address { display: block; overflow-wrap: anywhere; font-size: 11px; line-height: 1.35; }
+.selection-copy .order-subline { margin-top: 0; font-size: 10px; }
 .selection-note { display: grid; gap: 6px; padding: 4px 2px 2px; }
 .selection-note label { color: var(--muted); font-size: 11px; font-weight: 650; }
 .selection-note textarea { width: 100%; min-height: 60px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); font: inherit; font-size: 13px; line-height: 1.4; resize: vertical; }
 .selection-note textarea::placeholder { color: #a0a2a6; }
+.maps-input { min-height: 42px; font-size: 12px; }
 .note-clear { min-height: 36px; justify-self: end; padding: 3px 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
 .shift-select { min-height: 40px; padding: 0 11px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); font-size: 12px; }
 .stop-shift { margin-top: 6px; }
@@ -245,7 +264,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .route-note-editor { display: grid; gap: 6px; margin-top: 5px; }
 .route-note-editor label { color: var(--muted); font-size: 11px; font-weight: 650; }
 .route-note-editor textarea { width: 100%; min-height: 56px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--ink); font: inherit; font-size: 12px; line-height: 1.4; resize: vertical; }
-.route-note-buttons { display: flex; gap: 6px; }
+.route-note-editor .maps-input { min-height: 40px; padding: 0 9px; border-radius: 9px; font-size: 12px; }
+.route-note-buttons { display: grid; grid-template-columns: 1fr; }
 .route-note-buttons .button { flex: 1; min-height: 36px; padding: 0 7px; font-size: 11px; }
 .stop-total { flex: 0 0 auto; font-size: 12px; font-weight: 750; text-align: right; }
 .stop-total .money-sub { margin-top: 1px; font-size: 9px; }
@@ -255,7 +275,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stop-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
 .stop-actions.single { grid-template-columns: 1fr; }
 .stop-tools { display: flex; gap: 5px; }
-.stop-call { width: 40px; height: 40px; display: inline-grid; flex: 0 0 40px; place-items: center; border: 0; border-radius: 11px; background: var(--phone-blue); color: #fff; cursor: pointer; transition: transform .12s ease, filter .12s ease; }
+.stop-call { width: 40px; height: 40px; display: inline-grid; flex: 0 0 40px; place-items: center; border: 0; border-radius: 11px; background: var(--green); color: #fff; cursor: pointer; transition: transform .12s ease, filter .12s ease; }
 .stop-call:active { transform: scale(.95); filter: brightness(.9); }
 .stop-call svg { width: 18px; height: 18px; }
 .mini-button { width: 40px; height: 40px; display: inline-grid; flex: 0 0 40px; place-items: center; border: 1px solid var(--line); border-radius: 11px; background: #fff; color: #4c4e52; cursor: pointer; }
@@ -277,8 +297,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .bottom-actions > * { flex: 1; }
 .bottom-actions.single > * { flex: 1; }
 .detail-actions-dock { position: fixed; left: 50%; bottom: 0; z-index: 8; width: min(100%, 460px); margin: 0; padding: 9px 12px calc(10px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: rgba(255,255,255,.97); border-top: 1px solid var(--line); backdrop-filter: blur(12px); }
-.call-customer-full { width: 100%; min-height: 44px; background: var(--phone-blue); }
-.call-customer-full:hover { background: #1167b7; }
+.call-customer-full { width: 100%; min-height: 44px; background: var(--green); }
+.call-customer-full:hover { background: #176b4b; }
 .detail-actions-dock .bottom-actions { position: static; margin: 7px 0 0; padding: 0; border: 0; background: transparent; backdrop-filter: none; }
 .detail-actions-dock .bottom-actions > * { flex: 1; }
 .detail-actions-dock .bottom-actions.single .button { width: 100%; }
