@@ -6,7 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "vercel dev",
+    "dev": "vite",
     "dev:vite": "vite",
     "dev:vercel": "vercel dev",
     "build": "vite build",

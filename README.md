@@ -7,7 +7,7 @@
 1. Cài dependencies: `npm install`.
 2. Tạo `.env.local` từ `.env.example`; đặt `DATABASE_URL`, `SESSION_SECRET`, `N8N_API_KEY` và cấu hình Blob.
 3. Áp dụng `db/migrations/001_initial.sql` vào database test.
-4. Chạy `npm run dev` để mở app đầy đủ cùng Vercel Functions và API đăng nhập. Chỉ dùng `npm run dev:vite` để xem giao diện tĩnh; đăng nhập sẽ không hoạt động. PIN local mặc định là `1234`.
+4. Chạy `npm run dev:vercel` để mở app đầy đủ cùng Vercel Functions và API đăng nhập. `npm run dev` hoặc `npm run dev:vite` chỉ mở giao diện Vite, không có API đăng nhập. PIN local mặc định là `1234`.
 
 `N8N_BASE_URL` local dùng `/webhook-test` và Sheet test. Production phải dùng `/webhook` và Sheet production. Không đưa `.env.local` hoặc dữ liệu Sheet vào Git.
 
