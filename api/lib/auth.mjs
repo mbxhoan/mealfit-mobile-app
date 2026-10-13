@@ -2,6 +2,11 @@ import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { AppError, requireEnv } from "./core.mjs";
 import { getSql } from "./db.mjs";
 
+if (process.env.VERCEL_ENV !== "production") {
+  try { process.loadEnvFile(new URL("../../.env.local", import.meta.url)); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+
 const COOKIE = "mealfit_session";
 export const ACCOUNTS = {
   admin: { id: "admin", name: "Admin", role: "admin" },
