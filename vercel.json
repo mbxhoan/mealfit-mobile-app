@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "devCommand": "vite --port $PORT",
+  "outputDirectory": "dist",
+  "installCommand": "npm install",
+  "functions": {
+    "api/cron/*.js": { "maxDuration": 300 },
+    "api/refresh.js": { "maxDuration": 300 },
+    "api/media.js": { "maxDuration": 60 }
+  },
+  "crons": [{ "path": "/api/cron/maintenance", "schedule": "0 3 * * *" }],
+  "headers": [
+    { "source": "/sw.js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }, { "key": "Service-Worker-Allowed", "value": "/" }] },
+    { "source": "/manifest.webmanifest", "headers": [{ "key": "Content-Type", "value": "application/manifest+json" }] }
+  ]
+}

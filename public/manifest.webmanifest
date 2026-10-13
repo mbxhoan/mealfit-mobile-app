@@ -1,0 +1,10 @@
+{
+  "name": "Mealfit Giao hàng",
+  "short_name": "Mealfit",
+  "lang": "vi",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [{ "src": "/logo-transparent.png", "sizes": "any", "type": "image/png", "purpose": "any maskable" }]
+}

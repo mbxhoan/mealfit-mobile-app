@@ -18,7 +18,9 @@ export function allowedPhotoCount(existingCount, requestedCount) {
   return Math.max(0, Math.min(Math.floor(requestedCount), MAX_PHOTOS_PER_ORDER - Math.floor(existingCount)));
 }
 
-export const dueAmount = order => Math.max(0, order.total - order.paidAmount);
+export const dueAmount = order => order.paymentStatus === "Đã thanh toán"
+  ? 0
+  : Math.max(0, Number.isFinite(Number(order.remainingDue)) ? Number(order.remainingDue) : order.total - order.paidAmount);
 
 const shiftRank = shift => {
   const rank = SHIFT_OPTIONS.indexOf(shift);
@@ -125,7 +127,7 @@ export function startSingleDelivery(state, orderId, method, shippingFee) {
 export function markPaid(state, orderId, method, paidAt = Date.now()) {
   if (!PAYMENT_METHODS.includes(method)) throw new Error("Vui lòng chọn phương thức thanh toán.");
   const order = getOrder(state, orderId);
-  if (!order || dueAmount(order) === 0) throw new Error("Đơn hàng không còn khoản cần thu.");
+  if (!order || order.paymentStatus === "Đã thanh toán" || (dueAmount(order) === 0 && order.paymentStatus !== "Chưa thanh toán")) throw new Error("Đơn hàng không còn khoản cần thu.");
   let sessionId = null;
   if (order.sessionId) {
     const session = getActiveSession(state);
@@ -136,6 +138,8 @@ export function markPaid(state, orderId, method, paidAt = Date.now()) {
   return updateOrder(state, orderId, current => ({
     ...current,
     paidAmount: current.total,
+    remainingDue: 0,
+    paymentStatus: "Đã thanh toán",
     paymentMethod: method,
     payments: [...(current.payments || []), { method, amount, paidAt, ...(sessionId ? { sessionId } : {}) }]
   }));

@@ -22,67 +22,22 @@ import {
   startSession,
   startSingleDelivery
 } from "./domain.mjs";
+import imageCompression from "browser-image-compression";
+import Webcam from "webcam-easy";
+import { ApiError, apiRequest } from "./api-client.mjs";
+import {
+  ackOutbox, commitState, deletePhoto as deleteLocalPhoto, failOutbox, getMeta,
+  getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
+  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, writeStateSnapshot
+} from "./local-store.mjs";
 
-const STORAGE_KEY = "mealfit-prototype-v3";
-const DEMO_PIN = "1234";
-const roles = { admin: "Admin", nhanvien: "Nhân viên", shipper: "Shipper" };
-const roleNames = { admin: "Admin", nhanvien: "Nhân viên", shipper: "Shipper" };
+const accounts = { admin: "Admin", user: "Nhân viên", hieu: "Hiếu", hoan: "Hoàn", shipper: "Shipper" };
+const emptyState = () => ({ orders: [], sessions: [], activeSessionId: null });
 
-const dishes = [
-  { id: "cajun-100", name: "Ức gà cajun", weight: "100g", sale: 25000, cost: 17067, margin: 31.7 },
-  { id: "cajun-150", name: "Ức gà cajun", weight: "150g", sale: 36000, cost: 25600, margin: 28.9 },
-  { id: "cajun-200", name: "Ức gà cajun", weight: "200g", sale: 48000, cost: 34134, margin: 28.9 },
-  { id: "nguvi-100", name: "Ức gà ngũ vị", weight: "100g", sale: 25000, cost: 16833, margin: 32.7 },
-  { id: "nguvi-150", name: "Ức gà ngũ vị", weight: "150g", sale: 36000, cost: 25249, margin: 29.9 },
-  { id: "nguvi-200", name: "Ức gà ngũ vị", weight: "200g", sale: 48000, cost: 33666, margin: 29.9 },
-  { id: "sachanh-100", name: "Ức gà sả chanh", weight: "100g", sale: 25000, cost: 16474, margin: 34.1 },
-  { id: "sachanh-150", name: "Ức gà sả chanh", weight: "150g", sale: 36000, cost: 24712, margin: 31.4 }
-];
-
-const demoCustomers = [
-  { name: "Khách demo 01", phone: "000 000 0001", address: "Demo 01, P. Thảo Điền, TP.HCM" },
-  { name: "Khách demo 02", phone: "000 000 0002", address: "Demo 02, P. Bình Thạnh, TP.HCM" },
-  { name: "Khách demo 03", phone: "000 000 0003", address: "Demo 03, P. An Phú, TP.HCM" },
-  { name: "Khách demo 04", phone: "000 000 0004", address: "Demo 04, P. Thảo Điền, TP.HCM" },
-  { name: "Khách demo 05", phone: "000 000 0005", address: "Demo 05, P. Bình An, TP.HCM" },
-  { name: "Khách demo 06", phone: "000 000 0006", address: "Demo 06, P. An Khánh, TP.HCM" },
-  { name: "Khách demo 07", phone: "000 000 0007", address: "Demo 07, P. Bình Thạnh, TP.HCM" },
-  { name: "Khách demo 08", phone: "000 000 0008", address: "Demo 08, P. Thảo Điền, TP.HCM" }
-];
-
-const line = (name, weight, quantity, unitPrice) => ({ name, weight, quantity, unitPrice });
-const seedOrders = () => {
-  const raw = [
-    { id: "DH1001", customer: 0, items: [line("Combo giữ dáng", "Combo", 1, 219000)], shippingFee: 0, paidAmount: 219000, deliveryStatus: "Đã giao hàng", paymentMethod: "Chuyển khoản" },
-    { id: "DH1002", customer: 1, items: [line("Ức gà cajun", "100g", 2, 25000)], shippingFee: 30000, paidAmount: 0, deliveryStatus: "Đã giao hàng", paymentMethod: null },
-    { id: "DH1003", customer: 2, items: [line("Ức gà cajun", "200g", 1, 48000), line("Ức gà ngũ vị", "100g", 1, 25000)], shippingFee: 0, paidAmount: 0, deliveryStatus: "Chưa giao hàng", paymentMethod: null },
-    { id: "DH1004", customer: 3, items: [line("Combo giảm cân", "Combo", 1, 345000)], shippingFee: 0, paidAmount: 0, deliveryStatus: "Chưa giao hàng", paymentMethod: null },
-    { id: "DH1005", customer: 4, items: [line("Ức gà sả chanh", "150g", 2, 36000), line("Ức gà ngũ vị", "100g", 1, 25000)], shippingFee: 40000, paidAmount: 62000, deliveryStatus: "Chưa giao hàng", paymentMethod: "Tiền mặt" },
-    { id: "DH1006", customer: 5, items: [line("Ức gà cajun", "150g", 1, 36000), line("Ức gà sả chanh", "100g", 2, 25000)], shippingFee: 35000, paidAmount: 0, deliveryStatus: "Đang giao hàng", deliveryMethod: "Grab", paymentMethod: null },
-    { id: "DH1007", customer: 6, items: [line("Ức gà ngũ vị", "150g", 2, 36000)], shippingFee: 0, paidAmount: 72000, deliveryStatus: "Chưa giao hàng", paymentMethod: "Chuyển khoản" },
-    { id: "DH1008", customer: 7, items: [line("Combo tăng cơ", "Combo", 1, 395000)], shippingFee: 0, paidAmount: 395000, deliveryStatus: "Chưa giao hàng", paymentMethod: "Chuyển khoản" }
-  ];
-  return raw.map((order, index) => {
-    const customer = demoCustomers[order.customer];
-    const subtotal = order.items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
-    return {
-      ...order,
-      ...customer,
-      customer: customer.name,
-      date: Date.now() - index * 18 * 60 * 60 * 1000,
-      subtotal,
-      total: subtotal + order.shippingFee,
-      note: index === 4 ? "Gọi trước khi giao (ghi chú demo)" : "",
-      sessionId: null,
-      deliveredAt: order.deliveryStatus === "Đã giao hàng" ? Date.now() - index * 60 * 60 * 1000 : null,
-      payments: order.paidAmount ? [{ method: order.paymentMethod, amount: order.paidAmount, paidAt: Date.now() - index * 60 * 60 * 1000 }] : []
-    };
-  });
-};
-
-const newDemoState = () => ({ orders: seedOrders(), sessions: [], activeSessionId: null });
-let state = loadState();
+let state = emptyState();
+let lastPersistedState = emptyState();
 let role = null;
+let user = null;
 let viewStack = [{ name: "login" }];
 let orderFilter = "Tất cả";
 let sessionTab = "route";
@@ -97,38 +52,28 @@ let orderNoteEditId = null;
 let routeDrag = null;
 let routeDragFrame = null;
 let toastTimer = null;
-let photoDbPromise = null;
+let syncTimer = null;
+let syncRunning = false;
+let syncErrorShown = false;
+let lastSheetRefreshAt = 0;
+let stateWriteRunning = false;
+let lastServerRtt = null;
+let serverCounts = {};
+let lastSyncAt = null;
+let conflictCount = 0;
+let webcam = null;
 const photoUrls = new Map();
 const app = document.querySelector("#app");
-
-function loadState() {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) return newDemoState();
-    const parsed = JSON.parse(stored);
-    if (!Array.isArray(parsed.orders) || !Array.isArray(parsed.sessions)) return newDemoState();
-    return normalizeState(parsed);
-  } catch {
-    return newDemoState();
-  }
-}
-
-function persist() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 const currentView = () => viewStack.at(-1);
 const orderById = id => state.orders.find(order => order.id === id);
 const activeSession = () => state.sessions.find(session => session.id === state.activeSessionId && ["notStarted", "active", "paused"].includes(session.status));
-const isStaff = () => role === "admin" || role === "nhanvien";
+const isStaff = () => role === "admin" || role === "user";
+const canSeeOrder = order => role !== "shipper" || !order.assignedUserId || order.assignedUserId === user?.id;
 const money = amount => `${Math.round(Number(amount) || 0).toLocaleString("vi-VN")}đ`;
 const safe = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const addressLabel = value => safe(String(value ?? "").replace(/^Địa chỉ\s+/i, ""));
+const paymentRecipient = { bank: "VIB", account: "865884858", name: "Phạm Thị Linh Uyên" };
 const dateLabel = value => new Intl.DateTimeFormat("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(value));
 const timeLabel = value => new Intl.DateTimeFormat("vi-VN", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 
@@ -142,6 +87,7 @@ const iconPaths = {
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 3.1 5.2 2 2 0 0 1 5.1 3h3a2 2 0 0 1 2 1.7l.4 2.8a2 2 0 0 1-.6 1.7L8 11a16 16 0 0 0 5 5l1.8-1.9a2 2 0 0 1 1.7-.6l2.8.4a2 2 0 0 1 1.7 2z"/>',
   mapPin: '<path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/>',
+  qr: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M6 6h1M17 6h1M6 17h1M14 14h3v3h-3zM20 14v3M14 20h3M20 20h1"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   up: '<path d="m6 14 6-6 6 6"/>',
@@ -162,7 +108,11 @@ function icon(name, size = 20) {
 
 const networkConnection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
 const networkLabels = { offline: "Mạng mất kết nối", weak: "Tín hiệu mạng yếu", stable: "Tín hiệu mạng ổn định" };
-const networkSignal = () => classifyNetworkSignal(navigator.onLine, networkConnection || {});
+const networkSignal = () => {
+  if (!navigator.onLine || lastServerRtt === Infinity) return "offline";
+  if (lastServerRtt === null) return classifyNetworkSignal(navigator.onLine, networkConnection || {});
+  return lastServerRtt > 700 || classifyNetworkSignal(true, networkConnection || {}) === "weak" ? "weak" : "stable";
+};
 const networkIndicator = () => {
   const signal = networkSignal();
   return `<span class="network-indicator signal-${signal}" role="status" aria-label="${networkLabels[signal]}">${icon("signal", 18)}</span>`;
@@ -177,6 +127,18 @@ function updateNetworkIndicator() {
 window.addEventListener("online", updateNetworkIndicator);
 window.addEventListener("offline", updateNetworkIndicator);
 networkConnection?.addEventListener?.("change", updateNetworkIndicator);
+
+async function probeNetwork() {
+  if (!navigator.onLine) { lastServerRtt = Infinity; updateNetworkIndicator(); return; }
+  const startedAt = performance.now();
+  try {
+    await apiRequest("/api/ping", { method: "GET", timeout: 5_000 });
+    lastServerRtt = performance.now() - startedAt;
+  } catch {
+    lastServerRtt = Infinity;
+  }
+  updateNetworkIndicator();
+}
 
 function mapsButton(link, label = "Mở vị trí trên Google Maps") {
   try { const url = normalizeGoogleMapsLink(link); return url ? `<a class="maps-link-button" href="${safe(url)}" target="_blank" rel="noopener noreferrer" aria-label="${safe(label)}">${icon("mapPin", 18)}</a>` : ""; }
@@ -206,47 +168,46 @@ function appShell(content, { title = "", back = false, refresh = false } = {}) {
   const left = back
     ? `<button class="back-button" data-action="back" aria-label="Quay lại">${icon("arrow", 18)}<span>${safe(title)}</span></button>`
     : `<span class="topbar-spacer" aria-hidden="true"></span>`;
-  const tools = `${networkIndicator()}${refresh ? `<button class="icon-button" data-action="refresh" aria-label="Làm mới thông tin">${icon("refresh")}</button>` : ""}<button class="role-chip" data-action="logout" aria-label="Đổi tài khoản hoặc đăng xuất">${safe(roleNames[role] || "")}</button>`;
-  return `<div class="app-shell"><header class="topbar">${left}<img class="topbar-brand" src="../logo-transparent.png" alt="Mealfit"/><div class="topbar-tools">${tools}</div></header>${content}</div>${renderModal()}`;
+  const tools = `${networkIndicator()}${refresh ? `<button class="icon-button" data-action="refresh" aria-label="Làm mới thông tin">${icon("refresh")}</button>` : ""}<button class="role-chip" data-action="logout" aria-label="Đổi tài khoản hoặc đăng xuất">${safe(user?.name || "")}</button>`;
+  return `<div class="app-shell"><header class="topbar">${left}<img class="topbar-brand" src="/logo-transparent.png" alt="Mealfit"/><div class="topbar-tools">${tools}</div></header>${content}</div>${renderModal()}`;
 }
 
 function loginScreen() {
   return `<main class="login-page">
-    <div class="login-brand"><img src="../logo-transparent.png" alt="Logo"/></div>
+    <header class="login-topbar"><span aria-hidden="true"></span><img src="/logo-transparent.png" alt="Mealfit"/>${networkIndicator()}</header>
     <form class="login-form" id="login-form">
-      <div class="form-field"><label for="username">Tài khoản</label><select class="select" id="username" name="username" required><option value="">Chọn tài khoản demo</option><option value="admin">Admin</option><option value="nhanvien">Nhân viên</option><option value="shipper">Shipper</option></select></div>
-      <div class="form-field"><label for="pin">Mã PIN</label><input class="input" id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="Nhập PIN 4 số" autocomplete="off" required /></div>
+      <div class="form-field"><label for="username">Tài khoản</label><select class="select" id="username" name="username" required><option value="">Chọn tài khoản</option>${Object.entries(accounts).map(([id, name]) => `<option value="${id}">${name}</option>`).join("")}</select></div>
+      <div class="form-field"><label for="pin">Mã PIN</label><input class="input" id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,6}" minlength="4" maxlength="6" placeholder="Nhập PIN" autocomplete="current-password" required /></div>
       <p class="login-error" id="login-error" aria-live="polite"></p>
       <button class="button full" type="submit">Đăng nhập ${icon("chevron", 18)}</button>
-      <div class="demo-note"><strong>Tài khoản trình diễn</strong><br/>admin · nhanvien · shipper<br/>PIN: 1234</div>
-      <p class="fine-print" style="text-align:center">Dữ liệu đơn hàng và khách hàng trong bản này đều là dữ liệu giả.</p>
     </form>
-  </main>`;
+  </main>${renderModal()}`;
 }
 
 function orderCounts() {
   return {
-    pending: state.orders.filter(order => order.deliveryStatus === "Chưa giao hàng").length,
-    transit: state.orders.filter(order => order.deliveryStatus === "Đang giao hàng").length,
-    delivered: state.orders.filter(order => order.deliveryStatus === "Đã giao hàng").length
+    pending: serverCounts["Chưa giao hàng"] ?? state.orders.filter(order => order.deliveryStatus === "Chưa giao hàng").length,
+    transit: serverCounts["Đang giao hàng"] ?? state.orders.filter(order => order.deliveryStatus === "Đang giao hàng").length,
+    delivered: serverCounts["Đã giao hàng"] ?? state.orders.filter(order => order.deliveryStatus === "Đã giao hàng").length
   };
 }
 
 function homeScreen() {
   const counts = orderCounts();
   const menu = [
-    { title: "Đơn hàng", count: `${state.orders.length} đơn mẫu`, icon: "orders", action: "orders" },
-    { title: "Món", count: `${dishes.length} mức giá`, icon: "dish", action: "dishes" },
-    { title: "Giao hàng", count: role === "shipper" ? (activeSession() ? "Tiếp tục phiên giao" : "Tạo phiên giao") : "Giao lẻ · Theo dõi phiên", icon: "delivery", action: "delivery" }
+    { title: "Đơn hàng", count: `${counts.pending + counts.transit + counts.delivered} đơn`, icon: "orders", action: "orders" },
+    { title: role === "shipper" ? "Giao hàng" : "Phiên giao hàng", count: role === "shipper" ? (activeSession() ? "Tiếp tục phiên" : "Tạo phiên") : "Theo dõi tuyến", icon: "delivery", action: role === "shipper" ? "delivery" : "session-overview" }
   ];
   return `<main class="page">
-    <p class="home-date">${dateLabel(Date.now())} · Dữ liệu trình diễn</p>
+    <p class="home-date">${lastSyncAt ? `Đồng bộ ${timeLabel(lastSyncAt)}` : "Đơn hàng sẽ tải khi có kết nối"}</p>
     <div class="home-summary" aria-label="Tóm tắt đơn hàng">
       <div class="summary-cell"><span class="summary-number">${counts.pending}</span><span class="summary-label">Chưa giao</span></div>
       <div class="summary-cell"><span class="summary-number">${counts.transit}</span><span class="summary-label">Đang giao</span></div>
       <div class="summary-cell"><span class="summary-number">${counts.delivered}</span><span class="summary-label">Đã giao</span></div>
     </div>
-    <div class="menu-grid">${menu.map(item => `<button class="menu-card" data-action="open-${item.action}"><span class="menu-icon">${icon(item.icon, 23)}</span><span><span class="menu-label">${item.title}</span><span class="menu-count">${item.count}</span></span></button>`).join("")}</div>
+    <div class="menu-grid">${menu.map(item => `<button class="menu-card" data-action="open-${item.action}"><span class="menu-icon">${icon(item.icon, 23)}</span><span><span class="menu-label">${item.title}</span><span class="menu-count">${item.count}</span></span></button>`).join("")}${role === "admin" && conflictCount ? `<button class="menu-card" data-action="open-conflicts"><span class="menu-icon">${icon("orders", 23)}</span><span><span class="menu-label">Xung đột</span><span class="menu-count">${conflictCount} đơn cần xử lý</span></span></button>` : ""}</div>
+    ${!state.orders.length ? `<div class="empty-state" style="margin-top:14px">Chưa tải được đơn hàng.<button class="button secondary full" style="margin-top:12px" data-action="refresh">Thử đồng bộ</button></div>` : ""}
+    <p class="sync-state" aria-live="polite">${syncRunning ? "Đang đồng bộ" : (navigator.onLine ? "Đã lưu trên thiết bị" : "Ngoại tuyến · Sẽ đồng bộ khi có mạng")}</p>
     ${activeSession() && role === "shipper" ? `<div class="divider"></div><button class="button full" data-action="open-session">Tiếp tục phiên giao hàng ${icon("chevron", 18)}</button>` : ""}
   </main>`;
 }
@@ -258,15 +219,16 @@ function orderCard(order, clickable = true, selected = false) {
     <div style="flex:1;min-width:0">
       <div class="card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(order.deliveryStatus)}</div>
       <p class="order-customer">${safe(order.customer)}</p><p class="order-address">${addressLabel(order.address)}</p>
-      <div class="order-subline">${order.items.reduce((sum, item) => sum + item.quantity, 0)} món · ${dateLabel(order.date)} · ${statusBadge(due ? "Chưa thanh toán" : "Đã thanh toán", "payment")}</div>
+      <div class="order-subline">${dateLabel(order.date)} · ${statusBadge(order.paymentStatus || (due ? "Chưa thanh toán" : "Đã thanh toán"), "payment")}</div>
       <div class="card-bottom"><span class="money">${money(order.total)}${due ? `<small class="money-sub">Còn thu ${money(due)}</small>` : ""}</span><span>${icon("chevron", 18)}</span></div>
     </div>
   </div>`;
 }
 
 function ordersScreen() {
-  const filters = ["Tất cả", "Chưa giao hàng", "Đang giao hàng", "Đã giao hàng"];
-  const orders = orderFilter === "Tất cả" ? state.orders : state.orders.filter(order => order.deliveryStatus === orderFilter);
+  const filters = ["Tất cả", "Chưa giao hàng", "Đang giao hàng", "Đã giao hàng", "Đã huỷ đơn"];
+  const visibleOrders = state.orders.filter(canSeeOrder);
+  const orders = orderFilter === "Tất cả" ? visibleOrders : visibleOrders.filter(order => order.deliveryStatus === orderFilter);
   return `<main class="page">
     <div class="filter-row">${filters.map(filter => `<button class="filter-chip ${orderFilter === filter ? "active" : ""}" data-action="filter-orders" data-filter="${safe(filter)}">${safe(filter)}</button>`).join("")}</div>
     <div class="list">${orders.length ? orders.map(order => orderCard(order)).join("") : '<div class="empty-state"><strong>Chưa có đơn trong mục này</strong>Đơn hàng sẽ xuất hiện tại đây khi có dữ liệu.</div>'}</div>
@@ -274,15 +236,12 @@ function ordersScreen() {
 }
 
 function dishesScreen() {
-  return `<main class="page">
-    <div class="detail-card"><div class="detail-section"><h2>Tên món · khẩu phần</h2>${dishes.map(dish => `<div class="dish-row"><div><div class="dish-name">${safe(dish.name)}</div><div class="dish-meta">${safe(dish.weight)}${isStaff() ? ` · Vốn ${money(dish.cost)}` : ""}</div></div><div class="dish-price">${money(dish.sale)}${isStaff() ? `<small class="profit">Lãi ${dish.margin.toFixed(1)}%</small>` : ""}</div></div>`).join("")}</div></div>
-    <p class="fine-print" style="margin-top:12px">Giá tham khảo từ danh mục món trong workbook. Dữ liệu trong prototype không đồng bộ với file.</p>
-  </main>`;
+  return `<main class="page"><div class="empty-state">API chưa cung cấp danh sách món.</div></main>`;
 }
 
 function paymentSummary(order) {
   const due = dueAmount(order);
-  return `<div class="detail-row"><span>Trạng thái</span><span>${statusBadge(due ? "Chưa thanh toán" : "Đã thanh toán", "payment")}</span></div>
+  return `<div class="detail-row"><span>Trạng thái</span><span>${statusBadge(order.paymentStatus || (due ? "Chưa thanh toán" : "Đã thanh toán"), "payment")}</span></div>
     <div class="detail-row"><span>Đã thanh toán</span><span>${money(order.paidAmount)}</span></div>
     <div class="detail-row"><span>Còn phải thu</span><span class="${due ? "" : "profit"}">${money(due)}</span></div>${order.paymentMethod ? `<div class="detail-row"><span>Phương thức gần nhất</span><span>${safe(order.paymentMethod)}</span></div>` : ""}`;
 }
@@ -305,6 +264,7 @@ function deliveryInfoEditor(order, scope, saveAction) {
 function orderDetailScreen(view) {
   const order = orderById(view.orderId);
   if (!order) return `<main class="page"><div class="empty-state">Không tìm thấy đơn hàng.</div></main>`;
+  const items = Array.isArray(order.items) ? order.items : [];
   const fromSession = Boolean(view.fromSession && role === "shipper");
   const due = dueAmount(order);
   const session = activeSession();
@@ -318,12 +278,12 @@ function orderDetailScreen(view) {
     ? `<div class="bottom-actions ${due ? "" : "single"}">${due ? `<button class="button secondary" data-action="pay-order" data-id="${safe(order.id)}">Đã thanh toán</button>` : ""}<button class="button ${due ? "" : "full"}" data-action="deliver-order" data-id="${safe(order.id)}">Đã giao hàng</button></div>`
     : inSession && sessionPaused && order.deliveryStatus === "Đang giao hàng" ? `<div class="bottom-actions ${due ? "" : "single"}">${due ? '<button class="button secondary" disabled>Đã thanh toán</button>' : ""}<button class="button ${due ? "" : "full"}" disabled>Đã giao hàng</button></div><p class="fine-print">Tiếp tục phiên để giao hàng.</p>` : "";
   const mayCorrect = order.deliveryStatus === "Đã giao hàng" && (isStaff() || role === "shipper") && !sessionPaused;
-  const productLine = item => `<div class="product-line"><span>${safe(item.name)}</span><span class="product-price">${money(item.unitPrice * item.quantity)}</span><small>${safe(item.weight)} · ${item.quantity} phần × ${money(item.unitPrice)}</small></div>`;
+  const productLine = item => `<div class="product-line"><span>${safe(item.name)}</span><span class="product-price">${money(item.total ?? item.unitPrice * item.quantity)}</span><small>${safe(item.details || item.weight || "")} · ${item.quantity} phần × ${money(item.unitPrice)}</small></div>`;
   return `<main class="page ${sessionPaused ? "paused" : ""} order-page"><div class="order-meta"><p class="eyebrow">${safe(order.id)} · ${dateLabel(order.date)}</p>${statusBadge(order.deliveryStatus)}</div>
     <div class="detail-card order-detail">
       <section class="detail-section customer-section"><div class="customer-line"><strong>${safe(order.customer)}</strong><span class="customer-phone">${safe(order.phone)}</span></div><div class="customer-address-line"><div class="customer-address">${addressLabel(order.address)}</div>${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}</div>${order.note ? `<div class="customer-note">${safe(order.note)}</div>` : ""}${deliveryInfo}</section>
-      <section class="detail-section product-section"><h2>Sản phẩm <span>${order.items.length}</span></h2>${order.items.length ? productLine(order.items[0]) : '<p class="fine-print">Chưa có món.</p>'}${order.items.length > 1 ? `<details class="product-more"><summary><span>Xem thêm ${order.items.length - 1} món</span><span>Thu gọn</span></summary>${order.items.slice(1).map(productLine).join("")}</details>` : ""}</section>
-      <section class="detail-section payment-section"><h2>Thanh toán</h2><div class="detail-row"><span>Tiền hàng · ship</span><span>${money(order.subtotal)} · ${money(order.shippingFee)}</span></div><div class="detail-row total"><span>Tổng đơn</span><span>${money(order.total)}</span></div>${paymentSummary(order)}</section>
+      ${items.length ? `<section class="detail-section product-section"><h2>Sản phẩm <span>${items.length}</span></h2>${productLine(items[0])}${items.length > 1 ? `<details class="product-more"><summary><span>Xem thêm ${items.length - 1} món</span><span>Thu gọn</span></summary>${items.slice(1).map(productLine).join("")}</details>` : ""}</section>` : ""}
+      <section class="detail-section payment-section"><h2>Thanh toán</h2><div class="detail-row"><span>Tiền hàng · ship</span><span>${money(order.subtotal)} · ${money(order.shippingFee)}</span></div><div class="detail-row total"><span>Tổng đơn</span><span>${money(order.total)}</span></div>${paymentSummary(order)}<button class="button secondary full qr-payment-button" data-action="show-payment-qr" data-id="${safe(order.id)}">${icon("qr", 18)} Hiện QR thanh toán</button></section>
       ${(order.deliveryMethod && order.deliveryMethod !== "Phiên giao hàng") || order.deliveredAt ? `<section class="detail-section delivery-section"><h2>Giao hàng</h2>${order.deliveryMethod && order.deliveryMethod !== "Phiên giao hàng" ? `<div class="detail-row"><span>Hình thức</span><span>${safe(order.deliveryMethod)}</span></div>` : ""}${order.deliveredAt ? `<div class="detail-row"><span>Đã giao lúc</span><span>${timeLabel(order.deliveredAt)} · ${dateLabel(order.deliveredAt)}</span></div>` : ""}</section>` : ""}
       ${photoSection(order, sessionPaused)}
     </div>${mayCorrect ? `<button class="button secondary full" style="margin-top:10px" data-action="reopen-order-status" data-id="${safe(order.id)}">Sửa trạng thái giao hàng</button>` : ""}
@@ -344,7 +304,7 @@ function staffSessionsScreen() {
 
 function singleDeliveryScreen() {
   if (!isStaff()) return `<main class="page"><div class="empty-state"><strong>Không có quyền truy cập</strong>Giao lẻ dành cho admin và nhân viên.</div></main>`;
-  const pending = state.orders.filter(order => order.deliveryStatus === "Chưa giao hàng");
+  const pending = state.orders.filter(order => canSeeOrder(order) && order.deliveryStatus === "Chưa giao hàng");
   const transit = state.orders.filter(order => order.deliveryStatus === "Đang giao hàng" && !order.sessionId);
   const selected = orderById(selectedOrderId);
   return `<main class="page">
@@ -358,7 +318,7 @@ function singleDeliveryScreen() {
 }
 
 function orderSelectionButton(order, selected, action) {
-  return `<button class="select-order ${selected ? "selected" : ""}" aria-pressed="${selected}" data-action="${action}" data-id="${safe(order.id)}"><span class="checkmark" aria-hidden="true"></span><span class="selection-copy"><span class="selection-card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(dueAmount(order) ? "Chưa thanh toán" : "Đã thanh toán", "payment")}</span><span class="selection-customer-line"><span class="order-customer">${safe(order.customer)}</span><strong class="selection-price">${money(order.total)}</strong></span><span class="order-address">${addressLabel(order.address)}</span><span class="order-subline">${order.items.length} dòng</span></span></button>`;
+  return `<button class="select-order ${selected ? "selected" : ""}" aria-pressed="${selected}" data-action="${action}" data-id="${safe(order.id)}"><span class="checkmark" aria-hidden="true"></span><span class="selection-copy"><span class="selection-card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(order.paymentStatus || (dueAmount(order) ? "Chưa thanh toán" : "Đã thanh toán"), "payment")}</span><span class="selection-customer-line"><span class="order-customer">${safe(order.customer)}</span><strong class="selection-price">${money(order.total)}</strong></span><span class="order-address">${addressLabel(order.address)}</span><span class="order-subline">${(order.items || []).length} dòng</span></span></button>`;
 }
 
 function selectionNoteEditor(flow, order) {
@@ -372,7 +332,7 @@ function selectionNoteEditor(flow, order) {
 function sessionCreateScreen() {
   if (role !== "shipper") return `<main class="page"><div class="empty-state">Phiên giao hàng dành cho shipper.</div></main>`;
   if (activeSession()) return sessionScreen();
-  const pending = state.orders.filter(order => order.deliveryStatus === "Chưa giao hàng");
+  const pending = state.orders.filter(order => canSeeOrder(order) && order.deliveryStatus === "Chưa giao hàng");
   const selectedIds = window._sessionSelection || [];
   const shifts = window._sessionShifts || {};
   const shiftOptions = (selected, id) => `<select class="shift-select" aria-label="Ca giao đơn ${safe(id)}" data-shift-selection="${safe(id)}">${SHIFT_OPTIONS.map(shift => `<option ${shift === selected ? "selected" : ""}>${shift}</option>`).join("")}</select>`;
@@ -489,6 +449,12 @@ function renderModal() {
     const due = dueAmount(order);
   return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Xác nhận thanh toán</h2><p>Chọn phương thức nhận ${money(due)} từ ${safe(order.customer)}.</p>${["Tiền mặt", "Chuyển khoản", "Khác"].map(method => `<button class="modal-option ${modal.method === method ? "selected" : ""}" aria-pressed="${modal.method === method}" data-action="choose-payment" data-method="${safe(method)}"><span>${method}${method !== "Khác" ? ` · ${money(due)}` : ""}</span><span>${modal.method === method ? icon("check", 18) : ""}</span></button>`).join("")}<div class="modal-actions"><button class="button secondary" data-action="close-modal">Hủy</button><button class="button" data-action="confirm-payment" ${modal.method ? "" : "disabled"}>Xác nhận</button></div></section></div>`;
   }
+  if (modal.type === "payment-qr") {
+    const order = orderById(modal.orderId);
+    if (!order) return "";
+    const due = dueAmount(order);
+    return `<div class="modal-backdrop" data-action="backdrop"><section class="modal payment-qr-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">QR chuyển khoản</h2><p>${due ? `Số tiền cần thanh toán: <strong>${money(due)}</strong>` : "Đơn hàng đã thanh toán đủ."}</p><img class="payment-qr-image" src="/mealfit-payment-qr.png" alt="Mã VietQR tĩnh nhận tiền vào tài khoản ${paymentRecipient.bank} ${paymentRecipient.account}"/><div class="payment-recipient"><strong>${paymentRecipient.name}</strong><span>${paymentRecipient.bank} · ${paymentRecipient.account}</span></div><p class="payment-qr-hint">Mã QR không điền sẵn số tiền. Nhờ khách nhập đúng số tiền hiển thị khi chuyển khoản.</p><div class="modal-actions">${modal.confirmPayment ? `<button class="button secondary" data-action="back-to-payment">Quay lại</button><button class="button" data-action="confirm-transfer-payment">Xác nhận đã nhận</button>` : `<button class="button secondary full" data-action="close-modal">Đóng</button>`}</div></section></div>`;
+  }
   if (modal.type === "deliver-unpaid") {
     const order = orderById(modal.orderId);
     if (!order) return "";
@@ -508,6 +474,9 @@ function renderModal() {
     if (!order) return "";
     return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Sửa trạng thái ${safe(order.id)}</h2><p>Thanh toán và ảnh xác nhận sẽ được giữ lại.</p><div class="form-field"><label for="reopen-shift">Ca giao lại</label><select class="select" id="reopen-shift">${SHIFT_OPTIONS.map(shift => `<option ${shift === (modal.shift || "Sáng") ? "selected" : ""}>${shift}</option>`).join("")}</select></div><div class="modal-actions"><button class="button secondary" data-action="confirm-reopen-order" data-status="Chưa giao hàng">Chưa giao</button><button class="button" data-action="confirm-reopen-order" data-status="Đang giao hàng">Đang giao</button></div></section></div>`;
   }
+  if (modal.type === "error") return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Chưa hoàn tất</h2><p>${safe(modal.message)}</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="retry-sync">Thử lại</button></div></section></div>`;
+  if (modal.type === "camera") return `<div class="modal-backdrop"><section class="modal camera-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Chụp ảnh đơn hàng</h2><video id="camera-video" autoplay playsinline></video><canvas id="camera-canvas" class="hidden-input"></canvas><p class="fine-print" data-camera-message>Đang mở camera…</p><div class="modal-actions"><button class="button secondary" data-action="close-camera">Đóng</button><button class="button" data-action="capture-photo" disabled>Chụp ảnh</button></div></section></div>`;
+  if (modal.type === "conflicts") return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Xung đột đồng bộ</h2><p>${safe(modal.message || "Chọn dữ liệu cần giữ cho từng đơn.")}</p>${(modal.items || []).map(item => `<div class="conflict-row"><strong>${safe(item.orderCode)}</strong><div class="modal-actions"><button class="button secondary" data-action="resolve-conflict" data-id="${safe(item.conflictId)}" data-choice="sheet">Giữ Sheet</button><button class="button" data-action="resolve-conflict" data-id="${safe(item.conflictId)}" data-choice="app">Giữ ứng dụng</button></div></div>`).join("") || '<p>Không còn xung đột cần xử lý.</p>'}<div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="retry-sync">Làm mới</button></div></section></div>`;
   return "";
 }
 
@@ -537,10 +506,16 @@ function render() {
   requestAnimationFrame(updateContinueRouteButton);
 }
 
+function persistLastView() {
+  if (!user) return;
+  void setMeta(`lastView:${user.id}`, viewStack).catch(() => showError("Không lưu được màn hình gần nhất trên thiết bị."));
+}
+
 function navigate(view) {
   modal = null;
   viewStack.push(view);
   render();
+  persistLastView();
   window.scrollTo?.(0, 0);
 }
 
@@ -548,6 +523,7 @@ function back() {
   if (modal) { modal = null; render(); return; }
   if (viewStack.length > 1) viewStack.pop();
   render();
+  persistLastView();
 }
 
 function showSessionHistory(sessionId) {
@@ -563,12 +539,269 @@ function flash(message) {
   toastTimer = setTimeout(() => toast.classList.remove("show"), 2600);
 }
 
-function updateState(next, message) {
-  state = next;
-  const saved = persist();
+function cloneState(value) { return JSON.parse(JSON.stringify(value)); }
+
+function showError(message) {
+  modal = { type: "error", message: String(message || "Không thể hoàn tất thao tác.") };
   render();
-  if (!saved) flash("Không lưu được dữ liệu trên thiết bị. Kiểm tra dung lượng trình duyệt.");
-  else if (message) flash(message);
+}
+
+async function updateState(next, message) {
+  if (!user) throw new Error("Đăng nhập lại để tiếp tục.");
+  if (stateWriteRunning) throw new Error("Đang lưu thao tác trước đó. Thử lại sau giây lát.");
+  const normalized = normalizeState(next);
+  stateWriteRunning = true;
+  document.querySelector(".app-shell")?.classList.add("saving");
+  try {
+    await commitState(normalized, state, user.id);
+  } catch (error) {
+    showError("Không lưu được dữ liệu trên thiết bị. Kiểm tra dung lượng hoặc quyền lưu của trình duyệt.");
+    throw error;
+  } finally {
+    stateWriteRunning = false;
+    document.querySelector(".app-shell")?.classList.remove("saving");
+  }
+  state = normalized;
+  lastPersistedState = cloneState(state);
+  render();
+  if (message) flash(`${message} · Đã lưu trên thiết bị`);
+  void syncQueued();
+}
+
+async function syncQueued() {
+  if (!user || !navigator.onLine || syncRunning) return;
+  syncRunning = true;
+  try {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const batch = await nextOutboxBatch(user.id, 40);
+      if (!batch.length) break;
+      const operations = batch.map(item => ({ operationId: item.id, type: item.type, entityId: item.entityId, baseRevision: item.baseRevision, payload: item.payload }));
+      try {
+        const result = await apiRequest("/api/operations", { method: "POST", body: { operations } });
+        const byId = new Map((result.results || []).map(item => [item.id, item]));
+        for (const item of batch) {
+          const acknowledgement = byId.get(item.id);
+          if (acknowledgement) await ackOutbox(item.id, acknowledgement.revision);
+          else await failOutbox(item.id);
+        }
+      } catch (error) {
+        const results = error.details?.results || [];
+        const byId = new Map(results.map(item => [item.id, item]));
+        for (const item of batch) {
+          const result = byId.get(item.id);
+          if (result?.conflict) await failOutbox(item.id, true);
+          else if (result) await ackOutbox(item.id, result.revision);
+          else await failOutbox(item.id, error.status === 409);
+        }
+        if (error.status === 409) showError(error.message);
+        else if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+        break;
+      }
+    }
+    await syncPendingPhotos();
+    await syncPendingMediaDeletes();
+    state = normalizeState(await readState(emptyState(), user.id));
+    lastPersistedState = cloneState(state);
+    syncErrorShown = false;
+    render();
+  } catch (error) {
+    if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+  } finally {
+    syncRunning = false;
+  }
+}
+
+async function syncPendingPhotos() {
+  if (!user || !navigator.onLine) return;
+  const photos = await getPendingPhotos();
+  for (const photo of photos.slice(0, 5)) {
+    try {
+      const query = new URLSearchParams({ code: photo.orderId, id: photo.id, name: photo.name || `${photo.id}.jpg` });
+      const result = await apiRequest(`/api/media?${query}`, { method: "POST", headers: { "content-type": photo.blob.type || "image/jpeg" }, body: photo.blob, timeout: 30_000 });
+      await putPhoto({ ...photo, syncState: result.status === "sent" ? "synced" : "pending", syncedAt: result.status === "sent" ? Date.now() : null });
+    } catch (error) {
+      if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+      break;
+    }
+  }
+}
+
+async function syncPendingMediaDeletes() {
+  if (!user || !navigator.onLine) return;
+  const key = `media-deletes:${user.id}`;
+  const ids = await getMeta(key) || [];
+  const remaining = [];
+  for (const id of ids) {
+    try { await apiRequest(`/api/media/${encodeURIComponent(id)}`, { method: "DELETE" }); }
+    catch { remaining.push(id); }
+  }
+  await setMeta(key, remaining);
+}
+
+async function pullRemoteOrders({ sheet = false } = {}) {
+  if (!user || !navigator.onLine) return;
+  if (sheet) await apiRequest("/api/refresh", { method: "POST", body: {}, timeout: 120_000 });
+  let cursor = null;
+  let first = true;
+  do {
+    const params = new URLSearchParams({ limit: "100" });
+    if (cursor) params.set("cursor", cursor);
+    const page = await apiRequest(`/api/orders?${params}`);
+    if (first) { serverCounts = page.counts || {}; first = false; }
+    state = normalizeState(await mergeRemote({ orders: page.data || [] }, user.id));
+    lastPersistedState = cloneState(state);
+    cursor = page.nextCursor;
+    render();
+  } while (cursor);
+  const [sessions] = await Promise.all([apiRequest("/api/sessions")]);
+  state = normalizeState(await mergeRemote({ sessions: sessions.data || [] }, user.id));
+  lastPersistedState = cloneState(state);
+  if (role === "admin") {
+    try { conflictCount = (await apiRequest("/api/conflicts")).data.length; } catch { conflictCount = 0; }
+  }
+  lastSyncAt = Date.now();
+  await setMeta(`lastSync:${user.id}`, lastSyncAt);
+  render();
+}
+
+async function pullChanges() {
+  if (!user || !navigator.onLine) return;
+  try {
+    let cursor = await getMeta(`changeCursor:${user.id}`) || "";
+    for (let pass = 0; pass < 10; pass++) {
+      const params = new URLSearchParams({ limit: "100" });
+      if (cursor) params.set("cursor", cursor);
+      const page = await apiRequest(`/api/changes?${params}`);
+      state = normalizeState(await mergeRemote({ orders: page.orders || [], sessions: page.sessions || [] }, user.id));
+      lastPersistedState = cloneState(state);
+      cursor = page.nextCursor || cursor;
+      if (page.nextCursor) await setMeta(`changeCursor:${user.id}`, page.nextCursor);
+      if (!page.hasMore) break;
+    }
+    syncErrorShown = false;
+    render();
+  } catch (error) {
+    if (error.status === 401) void logout();
+    else if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+  }
+}
+
+async function refreshRemoteChanges() {
+  if (!user || !navigator.onLine || Date.now() - lastSheetRefreshAt < 60_000) return;
+  lastSheetRefreshAt = Date.now();
+  try {
+    const result = await apiRequest("/api/refresh", { method: "POST", body: {}, timeout: 120_000 });
+    if (result.imported > 0) await pullChanges();
+  } catch (error) {
+    if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+  }
+}
+
+async function hydrateOrderDetail(orderId) {
+  if (!navigator.onLine || !user) return;
+  try {
+    const result = await apiRequest(`/api/orders/${encodeURIComponent(orderId)}?refresh=1`);
+    state = normalizeState(await mergeRemote({ orders: [result.data] }, user.id));
+    lastPersistedState = cloneState(state);
+    render();
+  } catch (error) {
+    if (error.status === 401) void logout();
+    else if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+  }
+}
+
+function startBackgroundSync() {
+  clearInterval(syncTimer);
+  if (!user) return;
+  void syncQueued();
+  void pullChanges();
+  void probeNetwork();
+  syncTimer = setInterval(() => {
+    if (document.visibilityState === "visible") {
+      void syncQueued();
+      void pullChanges();
+      void probeNetwork();
+      void refreshRemoteChanges();
+    }
+  }, 12_000);
+}
+
+const validViewNames = new Set(["home", "orders", "sessions-overview", "session-create", "session", "add-orders", "order"]);
+
+async function activateUser(nextUser, { restoreView = true, refresh = true } = {}) {
+  user = nextUser;
+  role = nextUser.role;
+  await setMeta("lastUser", user.id);
+  state = normalizeState(await readState(emptyState(), user.id));
+  lastPersistedState = cloneState(state);
+  const savedStack = restoreView ? await getMeta(`lastView:${user.id}`) : null;
+  viewStack = Array.isArray(savedStack) && savedStack.length && savedStack.every(view => validViewNames.has(view?.name))
+    ? savedStack : [{ name: "home" }];
+  lastSyncAt = await getMeta(`lastSync:${user.id}`) || null;
+  render();
+  startBackgroundSync();
+  if (refresh && navigator.onLine) {
+    try { await pullRemoteOrders({ sheet: true }); }
+    catch (error) { showError(error.message); }
+  }
+}
+
+async function restoreOfflineUser(userId) {
+  const account = accounts[userId];
+  const roleName = userId === "admin" || userId === "user" ? userId : "shipper";
+  if (!account) return false;
+  await activateUser({ id: userId, name: account, role: roleName }, { refresh: false });
+  flash("Đang dùng dữ liệu đã lưu trên thiết bị · Ngoại tuyến");
+  return true;
+}
+
+async function logout() {
+  clearInterval(syncTimer);
+  try { await apiRequest("/api/auth/logout", { method: "POST", body: {} }); } catch { /* local logout must work offline */ }
+  await setMeta("lastUser", null);
+  role = null;
+  user = null;
+  modal = null;
+  viewStack = [{ name: "login" }];
+  render();
+}
+
+async function initializeApp() {
+  try {
+    await openLocalDb();
+    const cachedUserId = await getMeta("lastUser");
+    if (navigator.onLine) {
+      try {
+        const result = await apiRequest("/api/auth/session");
+        if (result.user) { await activateUser(result.user); return; }
+      } catch {
+        if (cachedUserId) { await restoreOfflineUser(cachedUserId); return; }
+      }
+    } else if (cachedUserId) {
+      await restoreOfflineUser(cachedUserId);
+      return;
+    }
+    render();
+  } catch (error) {
+    showError(error.message || "Không thể khôi phục dữ liệu trên thiết bị.");
+  }
+}
+
+async function claimUnassignedOrders(codes) {
+  const unassigned = codes.filter(code => !orderById(code)?.assignedUserId);
+  if (!unassigned.length) return state;
+  if (!navigator.onLine) throw new Error("Cần có mạng để nhận đơn chưa phân công.");
+  const result = await apiRequest("/api/claim", { method: "POST", body: { codes: unassigned } });
+  const next = cloneState(state);
+  for (const claimed of result.data || []) {
+    const order = next.orders.find(item => item.id === claimed.id);
+    if (order) Object.assign(order, { assignedUserId: claimed.assignedUserId, shipperName: claimed.shipperName, serverRevision: claimed.serverRevision });
+  }
+  await writeStateSnapshot(next, user.id);
+  state = next;
+  lastPersistedState = cloneState(next);
+  render();
+  return next;
 }
 
 function focusDragHandle(orderId) {
@@ -588,7 +821,7 @@ function announceOrderPosition(orderId, position) {
   routeAnnouncement = `${order?.customer || orderId}, vị trí ${position + 1}.`;
 }
 
-function reorderWithKeyboard(orderId, offset) {
+async function reorderWithKeyboard(orderId, offset) {
   if (role !== "shipper") return;
   const session = activeSession();
   if (!session || !["notStarted", "active"].includes(session.status)) return;
@@ -600,7 +833,7 @@ function reorderWithKeyboard(orderId, offset) {
     const next = reorderOrderInSession(state, orderId, targetIndex);
     if (next === state) return;
     announceOrderPosition(orderId, targetIndex);
-    updateState(next, "Đã sắp xếp lộ trình.");
+    await updateState(next, "Đã sắp xếp lộ trình.");
     focusDragHandle(orderId);
   } catch (error) { flash(error.message); }
 }
@@ -666,7 +899,7 @@ function updateRouteDrag(event) {
   if (!routeDragFrame) routeDragFrame = requestAnimationFrame(runDragAutoScroll);
 }
 
-function finishRouteDrag(event, cancelled = false) {
+async function finishRouteDrag(event, cancelled = false) {
   if (!routeDrag || event.pointerId !== routeDrag.pointerId) return;
   const drag = routeDrag;
   routeDrag = null;
@@ -687,7 +920,7 @@ function finishRouteDrag(event, cancelled = false) {
     const next = reorderOrderInSession(state, drag.id, targetIndex);
     if (next === state) { render(); return; }
     announceOrderPosition(drag.id, targetIndex);
-    updateState(next, "Đã sắp xếp lộ trình.");
+    await updateState(next, "Đã sắp xếp lộ trình.");
   } catch (error) { render(); flash(error.message); }
 }
 
@@ -708,7 +941,7 @@ function setButtonBusy(button, busy) {
   return true;
 }
 
-function deliverOrder(orderId) {
+async function deliverOrder(orderId) {
   const order = orderById(orderId);
   const session = order?.sessionId ? activeSession() : null;
   if (!order || (order.sessionId ? role !== "shipper" || session?.id !== order.sessionId || session.status !== "active" : !isStaff())) { flash("Tài khoản này không có quyền cập nhật đơn hàng."); return; }
@@ -721,7 +954,7 @@ function deliverOrder(orderId) {
   try {
     const next = markDelivered(state, orderId);
     if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
-    updateState(next, "Đã ghi nhận giao hàng.");
+    await updateState(next, "Đã ghi nhận giao hàng.");
   } catch (error) { flash(error.message); }
 }
 
@@ -734,55 +967,46 @@ function openPayment(orderId) {
   render();
 }
 
-async function openPhotoDb() {
-  if (!("indexedDB" in window)) throw new Error("Trình duyệt này chưa hỗ trợ lưu ảnh trên thiết bị.");
-  if (!photoDbPromise) photoDbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open("mealfit-prototype", 1);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains("photos")) {
-        const store = db.createObjectStore("photos", { keyPath: "id" });
-        store.createIndex("orderId", "orderId", { unique: false });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Không mở được kho ảnh."));
-  });
-  return photoDbPromise;
-}
-
-async function getOrderPhotos(orderId) {
-  const db = await openPhotoDb();
-  return new Promise((resolve, reject) => {
-    const request = db.transaction("photos", "readonly").objectStore("photos").index("orderId").getAll(orderId);
-    request.onsuccess = () => resolve(request.result.sort((a, b) => a.createdAt - b.createdAt));
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function putPhoto(photo) {
-  const db = await openPhotoDb();
-  return new Promise((resolve, reject) => {
-    const request = db.transaction("photos", "readwrite").objectStore("photos").put(photo);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-}
+const getOrderPhotos = loadOrderPhotos;
+const putPhoto = storeLocalPhoto;
 
 async function deletePhoto(id) {
-  const db = await openPhotoDb();
-  return new Promise((resolve, reject) => {
-    const request = db.transaction("photos", "readwrite").objectStore("photos").delete(id);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+  const photos = await getOrderPhotos(currentView().orderId);
+  const photo = photos.find(item => item.id === id);
+  if (!photo) return;
+  await deleteLocalPhoto(id);
+  if (photo.remoteId) {
+    const key = `media-deletes:${user.id}`;
+    await setMeta(key, [...new Set([...(await getMeta(key) || []), photo.remoteId])]);
+    void syncPendingMediaDeletes();
+  }
 }
 
 async function hydratePhotos(orderId) {
   const target = document.querySelector(`[data-photo-order="${CSS.escape(orderId)}"]`);
   if (!target) return;
   try {
-    const photos = await getOrderPhotos(orderId);
+    let photos = await getOrderPhotos(orderId);
+    if (navigator.onLine && user) {
+      try {
+        const remote = await apiRequest(`/api/media?code=${encodeURIComponent(orderId)}`);
+        for (const item of remote.data || []) {
+          const existing = photos.find(photo => photo.id === item.id);
+          if (existing) {
+            existing.remoteId = item.id;
+            existing.syncState = item.status === "sent" ? "synced" : "pending";
+            await putPhoto(existing);
+            continue;
+          }
+          const response = await fetch(`/api/media/${encodeURIComponent(item.id)}`, { credentials: "same-origin", cache: "no-store" });
+          if (!response.ok) continue;
+          const photo = { ...item, orderId, remoteId: item.id, syncState: item.status === "sent" ? "synced" : "pending", blob: await response.blob(), createdAt: new Date(item.createdAt).valueOf() || Date.now() };
+          await putPhoto(photo);
+          photos.push(photo);
+        }
+      } catch { /* keep the local photo cache available offline */ }
+    }
+    photos.sort((a, b) => a.createdAt - b.createdAt);
     if (!target.isConnected) return;
     const count = target.closest(".photo-disclosure")?.querySelector("[data-photo-count]");
     if (count) count.textContent = `${photos.length}/5`;
@@ -798,6 +1022,9 @@ async function hydratePhotos(orderId) {
 }
 
 async function resizeImage(file) {
+  try {
+    return await imageCompression(file, { maxSizeMB: 0.8, maxWidthOrHeight: 1600, useWebWorker: true, fileType: "image/jpeg" });
+  } catch { /* browser canvas fallback below */ }
   if (typeof createImageBitmap !== "function") return file;
   let bitmap;
   try { bitmap = await createImageBitmap(file); }
@@ -811,12 +1038,8 @@ async function resizeImage(file) {
   return new Promise(resolve => canvas.toBlob(blob => resolve(blob || file), "image/jpeg", 0.84));
 }
 
-async function saveProofFiles(input) {
-  if (activeSession()?.status === "paused") { input.value = ""; flash("Tiếp tục phiên trước khi thêm ảnh."); return; }
-  const orderId = currentView().orderId;
-  const kind = input.dataset.photoKind;
-  const files = [...(input.files || [])];
-  input.value = "";
+async function savePhotoFiles(orderId, files) {
+  if (activeSession()?.status === "paused") { flash("Tiếp tục phiên trước khi thêm ảnh."); return; }
   if (!files.length) return;
   try {
     const existing = await getOrderPhotos(orderId);
@@ -833,20 +1056,62 @@ async function saveProofFiles(input) {
     for (const file of validFiles.slice(0, allowedCount)) {
       try {
         const blob = await resizeImage(file);
-        const photo = { id: crypto.randomUUID(), orderId, kind, name: file.name, blob, createdAt: Date.now() };
+        if (blob.size > 2 * 1024 * 1024) throw new Error("Ảnh sau khi nén vẫn lớn hơn 2 MB.");
+        const photo = { id: crypto.randomUUID(), orderId, name: file.name, blob, createdAt: Date.now(), syncState: "pending" };
         await putPhoto(photo);
         saved++;
-      } catch { flash(`Không đọc được ảnh ${file.name}.`); }
+      } catch (error) { flash(error.message || `Không đọc được ảnh ${file.name}.`); }
     }
     await hydratePhotos(orderId);
     if (validFiles.length > allowedCount) flash("Chỉ 5 ảnh được lưu cho mỗi đơn.");
     else if (saved) flash(`${saved} ảnh đã lưu trên thiết bị.`);
+    if (saved && navigator.onLine) void syncPendingPhotos();
   } catch { flash("Không lưu được ảnh trên thiết bị này."); }
+}
+
+async function saveProofFiles(input) {
+  const files = [...(input.files || [])];
+  input.value = "";
+  await savePhotoFiles(currentView().orderId, files);
+}
+
+async function openCamera() {
+  if (activeSession()?.status === "paused") { flash("Tiếp tục phiên trước khi chụp ảnh."); return; }
+  modal = { type: "camera" };
+  render();
+  try {
+    const video = document.querySelector("#camera-video");
+    const canvas = document.querySelector("#camera-canvas");
+    webcam = new Webcam(video, "environment", canvas);
+    await webcam.start();
+    const button = document.querySelector('[data-action="capture-photo"]');
+    if (button) button.disabled = false;
+  } catch {
+    if (webcam) webcam.stop();
+    webcam = null;
+    modal = null;
+    render();
+    document.querySelector("#camera-input")?.click();
+    flash("Không mở được camera. Hãy chọn ảnh từ thiết bị.");
+  }
+}
+
+async function capturePhoto() {
+  if (!webcam) return;
+  const dataUrl = webcam.snap();
+  webcam.stop();
+  webcam = null;
+  modal = null;
+  render();
+  const response = await fetch(dataUrl);
+  const file = new File([await response.blob()], `mealfit-${Date.now()}.jpg`, { type: "image/jpeg" });
+  await savePhotoFiles(currentView().orderId, [file]);
 }
 
 app.addEventListener("click", async event => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
+  if (stateWriteRunning) return;
   if (button.classList.contains("stop-card") || button.classList.contains("session-order")) {
     if (event.target.closest("button, a, select, input, textarea, summary")) return;
   }
@@ -854,11 +1119,44 @@ app.addEventListener("click", async event => {
   const id = button.dataset.id;
   if (action === "backdrop" && event.target === button) { modal = null; render(); return; }
   if (action === "back") { back(); return; }
-  if (action === "logout") {
-    role = null; viewStack = [{ name: "login" }]; modal = null; render(); return;
-  }
+  if (action === "logout") { await logout(); return; }
   if (action === "refresh") {
-    state = loadState(); render(); flash("Đã tải dữ liệu trên thiết bị · Chưa kết nối API."); return;
+    if (!setButtonBusy(button, true)) return;
+    try { await syncQueued(); await apiRequest("/api/refresh", { method: "POST", body: { force: true }, timeout: 120_000 }); await pullRemoteOrders(); flash("Đã làm mới dữ liệu đơn hàng."); }
+    catch (error) { showError(error.message); }
+    finally { setButtonBusy(button, false); }
+    return;
+  }
+  if (action === "retry-sync") {
+    modal = null; render();
+    try { await syncQueued(); await apiRequest("/api/refresh", { method: "POST", body: { force: true }, timeout: 120_000 }); await pullRemoteOrders(); flash("Đồng bộ đã hoàn tất."); }
+    catch (error) { showError(error.message); }
+    return;
+  }
+  if (action === "open-conflicts") {
+    try {
+      const result = await apiRequest("/api/conflicts");
+      modal = { type: "conflicts", items: (result.data || []).map(item => ({ ...item, conflictId: item.id, orderCode: item.code })) };
+    } catch (error) { modal = { type: "error", message: error.message }; }
+    render(); return;
+  }
+  if (action === "resolve-conflict") {
+    if (!setButtonBusy(button, true)) return;
+    try {
+      await apiRequest("/api/conflicts", { method: "POST", body: { id, resolution: button.dataset.choice } });
+      conflictCount = Math.max(0, conflictCount - 1);
+      const result = await apiRequest("/api/conflicts");
+      modal = { type: "conflicts", items: (result.data || []).map(item => ({ ...item, conflictId: item.id, orderCode: item.code })) };
+      render();
+      await pullChanges();
+    } catch (error) { showError(error.message); }
+    return;
+  }
+  if (action === "close-camera") { webcam?.stop(); webcam = null; modal = null; render(); return; }
+  if (action === "capture-photo") {
+    if (!setButtonBusy(button, true)) return;
+    try { await capturePhoto(); } catch (error) { showError(error.message); webcam?.stop(); webcam = null; modal = null; render(); }
+    return;
   }
   if (action === "open-orders") { orderFilter = "Tất cả"; navigate({ name: "orders" }); return; }
   if (action === "open-dishes") { navigate({ name: "dishes" }); return; }
@@ -866,15 +1164,15 @@ app.addEventListener("click", async event => {
     if (role === "shipper") {
       if (activeSession()) { sessionTab = "route"; navigate({ name: "session" }); }
       else { navigate({ name: "session" }); }
-    } else if (isStaff()) { selectedOrderId = null; navigate({ name: "delivery" }); }
+    } else if (isStaff()) navigate({ name: "sessions-overview" });
     else flash("Tài khoản này không có quyền giao hàng.");
     return;
   }
   if (action === "open-session-overview") { navigate({ name: "sessions-overview" }); return; }
   if (action === "open-session") { sessionTab = "route"; navigate({ name: "session" }); return; }
   if (action === "open-session-history") { sessionTab = "route"; navigate({ name: "session", sessionId: id }); return; }
-  if (action === "open-order") { navigate({ name: "order", orderId: id, fromSession: false }); return; }
-  if (action === "open-order-session") { navigate({ name: "order", orderId: id, fromSession: true }); return; }
+  if (action === "open-order") { navigate({ name: "order", orderId: id, fromSession: false }); void hydrateOrderDetail(id); return; }
+  if (action === "open-order-session") { navigate({ name: "order", orderId: id, fromSession: true }); void hydrateOrderDetail(id); return; }
   if (action === "filter-orders") { orderFilter = button.dataset.filter; render(); return; }
   if (action === "select-single-order") { selectedOrderId = selectedOrderId === id ? null : id; render(); return; }
   if (action === "clear-selection-note") {
@@ -906,7 +1204,7 @@ app.addEventListener("click", async event => {
       const mapsLink = document.querySelector("[data-detail-maps]")?.value || "";
       const next = setOrderMapsLink(setOrderNote(state, id, note), id, mapsLink);
       orderNoteEditId = null;
-      updateState(next, note.trim() || mapsLink.trim() ? "Đã lưu ghi chú và vị trí đơn hàng." : "Đã xóa ghi chú và vị trí đơn hàng.");
+      await updateState(next, note.trim() || mapsLink.trim() ? "Đã lưu ghi chú và vị trí đơn hàng." : "Đã xóa ghi chú và vị trí đơn hàng.");
     } catch (error) { flash(error.message); }
     return;
   }
@@ -919,19 +1217,22 @@ app.addEventListener("click", async event => {
       const mapsLink = document.querySelector("[data-route-maps]")?.value || "";
       const next = setOrderMapsLink(setOrderNote(state, id, note), id, mapsLink);
       routeNoteOrderId = null;
-      updateState(next, note.trim() || mapsLink.trim() ? "Đã lưu ghi chú và vị trí đơn hàng." : "Đã xóa ghi chú và vị trí đơn hàng.");
+      await updateState(next, note.trim() || mapsLink.trim() ? "Đã lưu ghi chú và vị trí đơn hàng." : "Đã xóa ghi chú và vị trí đơn hàng.");
     } catch (error) { flash(error.message); }
     return;
   }
   if (action === "create-session") {
     if (role !== "shipper") { flash("Chỉ shipper có thể tạo phiên giao hàng."); return; }
     try {
-      updateState(createSession(state, window._sessionSelection || [], window._sessionShifts || {}, Date.now(), window._sessionNotes || {}, window._sessionMaps || {}), "Phiên đã tạo · Sắp xếp tuyến trước khi bắt đầu.");
+      const selected = window._sessionSelection || [];
+      const claimed = await claimUnassignedOrders(selected);
+      await updateState(createSession(claimed, selected, window._sessionShifts || {}, Date.now(), window._sessionNotes || {}, window._sessionMaps || {}), "Phiên đã tạo · Sắp xếp tuyến trước khi bắt đầu.");
       window._sessionSelection = [];
       window._sessionShifts = {};
       window._sessionNotes = {};
       window._sessionMaps = {};
       viewStack[viewStack.length - 1] = { name: "session" };
+      persistLastView();
       sessionTab = "route"; render();
     } catch (error) { flash(error.message); }
     return;
@@ -951,17 +1252,17 @@ app.addEventListener("click", async event => {
   }
   if (action === "start-session") {
     if (role !== "shipper") { flash("Chỉ shipper có thể bắt đầu phiên."); return; }
-    try { updateState(startSession(state), "Bắt đầu giao hàng."); } catch (error) { flash(error.message); }
+    try { await updateState(startSession(state), "Bắt đầu giao hàng."); } catch (error) { flash(error.message); }
     return;
   }
   if (action === "pause-session") {
     if (role !== "shipper") { flash("Chỉ shipper có thể tạm dừng phiên."); return; }
-    try { updateState(pauseSession(state), "Đã tạm dừng lộ trình."); } catch (error) { flash(error.message); }
+    try { await updateState(pauseSession(state), "Đã tạm dừng lộ trình."); } catch (error) { flash(error.message); }
     return;
   }
   if (action === "resume-session") {
     if (role !== "shipper") { flash("Chỉ shipper có thể tiếp tục phiên."); return; }
-    try { updateState(resumeSession(state), "Đã tiếp tục lộ trình."); } catch (error) { flash(error.message); }
+    try { await updateState(resumeSession(state), "Đã tiếp tục lộ trình."); } catch (error) { flash(error.message); }
     return;
   }
   if (action === "cancel-session") {
@@ -974,7 +1275,7 @@ app.addEventListener("click", async event => {
       const sessionId = activeSession()?.id;
       const next = cancelSession(state);
       if (sessionId) showSessionHistory(sessionId);
-      modal = null; updateState(next, "Đã hủy lộ trình.");
+      modal = null; await updateState(next, "Đã hủy lộ trình.");
     }
     catch (error) { modal = null; render(); flash(error.message); }
     return;
@@ -992,7 +1293,7 @@ app.addEventListener("click", async event => {
   if (action === "remove-stop") { if (role !== "shipper") { flash("Chỉ shipper có thể chỉnh sửa phiên."); return; } modal = { type: "remove-stop", orderId: id }; render(); return; }
   if (action === "confirm-remove-stop") {
     if (role !== "shipper") { modal = null; render(); flash("Chỉ shipper có thể chỉnh sửa phiên."); return; }
-    try { updateState(removeOrderFromSession(state, modal.orderId), "Đơn đã trở về danh sách chưa giao."); modal = null; render(); }
+    try { await updateState(removeOrderFromSession(state, modal.orderId), "Đơn đã trở về danh sách chưa giao."); modal = null; render(); }
     catch (error) { modal = null; render(); flash(error.message); }
     return;
   }
@@ -1007,10 +1308,11 @@ app.addEventListener("click", async event => {
     const deliveryStatus = button.dataset.status;
     if ((!isStaff() && role !== "shipper") || !orderId) { modal = null; render(); flash("Tài khoản này không thể sửa trạng thái đơn."); return; }
     try {
-      state = reopenDeliveredOrder(state, orderId, deliveryStatus, document.querySelector("#reopen-shift")?.value || modal.shift);
-      const saved = persist(); modal = null; render();
+      const next = reopenDeliveredOrder(state, orderId, deliveryStatus, document.querySelector("#reopen-shift")?.value || modal.shift);
+      modal = null;
+      await updateState(next, deliveryStatus === "Đang giao hàng" ? "Đơn đã được thêm lại vào tuyến." : "Đơn đã trở về danh sách chưa giao.");
       const readded = activeSession() && orderById(orderId)?.sessionId === activeSession().id;
-      flash(saved ? readded ? "Đơn đã được thêm cuối ca vào phiên hiện có." : deliveryStatus === "Đang giao hàng" ? "Đơn đã được thêm lại vào tuyến." : "Đơn đã trở về danh sách chưa giao." : "Không lưu được dữ liệu trên thiết bị.");
+      if (readded) flash("Đơn đã được thêm cuối ca vào phiên hiện có.");
     } catch (error) { flash(error.message); }
     return;
   }
@@ -1024,24 +1326,42 @@ app.addEventListener("click", async event => {
   if (action === "confirm-add-orders") {
     if (role !== "shipper") { flash("Chỉ shipper có thể chỉnh sửa phiên."); return; }
     try {
-      updateState(addOrdersToSession(state, window._addSelection || [], addOrdersShift, window._addNotes || {}, window._addMaps || {}), "Đã thêm đơn vào phiên.");
+      const selected = window._addSelection || [];
+      const claimed = await claimUnassignedOrders(selected);
+      await updateState(addOrdersToSession(claimed, selected, addOrdersShift, window._addNotes || {}, window._addMaps || {}), "Đã thêm đơn vào phiên.");
       window._addSelection = []; window._addNotes = {}; window._addMaps = {}; viewStack.pop(); sessionTab = "route"; render();
+      persistLastView();
     } catch (error) { flash(error.message); }
     return;
   }
   if (action === "pay-order") { openPayment(id); return; }
+  if (action === "show-payment-qr") { modal = { type: "payment-qr", orderId: id }; render(); return; }
   if (action === "choose-payment") { modal.method = button.dataset.method; render(); return; }
   if (action === "confirm-payment") {
+    if (modal?.method === "Chuyển khoản") { modal = { type: "payment-qr", orderId: modal.orderId, confirmPayment: true }; render(); return; }
     const order = modal && orderById(modal.orderId);
     const session = order?.sessionId ? activeSession() : null;
     if (!role || !order || (order.sessionId ? role !== "shipper" || session?.id !== order.sessionId || session.status !== "active" : !isStaff())) { modal = null; render(); flash("Tài khoản này không có quyền cập nhật thanh toán."); return; }
     try {
-      state = markPaid(state, modal.orderId, modal.method);
-      const saved = persist(); modal = null; render(); flash(saved ? "Đã ghi nhận thanh toán." : "Không lưu được dữ liệu trên thiết bị.");
+      const next = markPaid(state, modal.orderId, modal.method);
+      modal = null;
+      await updateState(next, "Đã ghi nhận thanh toán.");
     } catch (error) { flash(error.message); }
     return;
   }
-  if (action === "deliver-order") { deliverOrder(id); return; }
+  if (action === "back-to-payment") { modal = { type: "payment", orderId: modal.orderId, method: "Chuyển khoản" }; render(); return; }
+  if (action === "confirm-transfer-payment") {
+    const order = modal && orderById(modal.orderId);
+    const session = order?.sessionId ? activeSession() : null;
+    if (!role || !order || (order.sessionId ? role !== "shipper" || session?.id !== order.sessionId || session.status !== "active" : !isStaff())) { modal = null; render(); flash("Tài khoản này không có quyền cập nhật thanh toán."); return; }
+    try {
+      const next = markPaid(state, modal.orderId, "Chuyển khoản");
+      modal = null;
+      await updateState(next, "Đã ghi nhận thanh toán chuyển khoản.");
+    } catch (error) { flash(error.message); }
+    return;
+  }
+  if (action === "deliver-order") { await deliverOrder(id); return; }
   if (action === "confirm-delivery-unpaid") {
     const orderId = modal.orderId;
     const order = orderById(orderId);
@@ -1050,15 +1370,17 @@ app.addEventListener("click", async event => {
     try {
       const next = markDelivered(state, orderId);
       if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
-      state = next; const saved = persist(); modal = null; render(); flash(saved ? "Đã giao hàng, khoản phải thu vẫn được ghi nhận." : "Không lưu được dữ liệu trên thiết bị.");
+      modal = null;
+      await updateState(next, "Đã giao hàng, khoản phải thu vẫn được ghi nhận.");
     }
     catch (error) { modal = null; render(); flash(error.message); }
     return;
   }
   if (action === "close-modal") { modal = null; render(); return; }
   if (action === "choose-photo") {
-    const input = button.dataset.source === "camera" ? document.querySelector("#camera-input") : document.querySelector("#upload-input");
-    input?.click(); return;
+    if (button.dataset.source === "camera") await openCamera();
+    else document.querySelector("#upload-input")?.click();
+    return;
   }
   if (action === "delete-photo") {
     if (activeSession()?.status === "paused") { flash("Tiếp tục phiên trước khi thay đổi ảnh."); return; }
@@ -1096,7 +1418,7 @@ app.addEventListener("change", async event => {
   }
   if (event.target.matches("[data-session-shift]")) {
     if (role !== "shipper") return;
-    try { updateState(setSessionOrderShift(state, event.target.dataset.sessionShift, event.target.value)); }
+    try { await updateState(setSessionOrderShift(state, event.target.dataset.sessionShift, event.target.value)); }
     catch (error) { flash(error.message); }
     return;
   }
@@ -1126,30 +1448,33 @@ app.addEventListener("input", event => {
   }
 });
 
-app.addEventListener("submit", event => {
+app.addEventListener("submit", async event => {
   event.preventDefault();
   if (event.target.id === "login-form") {
     const data = new FormData(event.target);
     const username = data.get("username");
-    if (!Object.hasOwn(roles, username) || data.get("pin") !== DEMO_PIN) {
+    const pin = String(data.get("pin") || "");
+    const submit = event.target.querySelector('[type="submit"]');
+    if (!Object.hasOwn(accounts, username) || !/^\d{4,6}$/.test(pin)) {
       document.querySelector("#login-error").textContent = "Tài khoản hoặc PIN chưa đúng.";
       return;
     }
-    role = username;
-    viewStack = [{ name: "home" }];
-    render();
-    return;
-  }
-  if (event.target.id === "single-form") {
-    if (!isStaff()) { flash("Chỉ admin và nhân viên có thể giao lẻ."); return; }
-    const data = new FormData(event.target);
-    const fee = Number(data.get("shippingFee"));
-    const orderId = selectedOrderId;
+    if (!setButtonBusy(submit, true)) return;
     try {
-      const next = startSingleDelivery(state, orderId, data.get("method"), fee);
-      selectedOrderId = null;
-      updateState(next, "Đơn đã chuyển sang đang giao.");
-    } catch (error) { flash(error.message); }
+      const result = await apiRequest("/api/auth/login", { method: "POST", body: { username, pin } });
+      if (!result.user) throw new Error("Không thể tạo phiên đăng nhập.");
+      await activateUser(result.user, { restoreView: false });
+    } catch (error) {
+      const cachedUser = await getMeta("lastUser");
+      if ((error.status === 0 || error.status >= 500 || !navigator.onLine) && cachedUser === username) {
+        await restoreOfflineUser(username);
+      } else {
+        const target = document.querySelector("#login-error");
+        if (target) target.textContent = error.message;
+      }
+    } finally {
+      if (submit?.isConnected) setButtonBusy(submit, false);
+    }
   }
 });
 
@@ -1157,9 +1482,4 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && modal) { modal = null; render(); }
 });
 
-window.addEventListener("storage", event => {
-  if (event.key === STORAGE_KEY && event.newValue) { state = loadState(); render(); }
-});
-
-persist();
-render();
+void initializeApp();

@@ -1,0 +1,28 @@
+{
+  "name": "mealfit-shipping",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vercel dev",
+    "dev:vite": "vite",
+    "dev:vercel": "vercel dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test domain.test.mjs local-store.test.mjs api/lib/*.test.mjs"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.2.0",
+    "@vercel/blob": "^2.3.0",
+    "@vercel/functions": "^2.2.0",
+    "browser-image-compression": "^2.0.2",
+    "busboy": "^1.6.0",
+    "webcam-easy": "^1.0.6"
+  },
+  "devDependencies": {
+    "vercel": "^50.41.0",
+    "vite": "^7.1.0"
+  }
+}

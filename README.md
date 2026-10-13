@@ -1,19 +1,23 @@
-# Mealfit mobile prototype
+# Mealfit Shipping
 
-Giao diện web dành cho màn hình điện thoại. Tài khoản demo: `admin`, `nhanvien`, `shipper`; PIN `1234`.
+Ứng dụng web mobile ưu tiên xem đơn và giao hàng theo phiên. Dữ liệu thao tác được ghi vào IndexedDB trước, sau đó đồng bộ qua Vercel Functions, Postgres và n8n. Bản phát hành không có dữ liệu đơn mẫu.
 
-Chạy từ thư mục gốc của dự án:
+## Chạy local
+
+1. Cài dependencies: `npm install`.
+2. Tạo `.env.local` từ `.env.example`; đặt `DATABASE_URL`, `SESSION_SECRET`, `N8N_API_KEY` và cấu hình Blob.
+3. Áp dụng `db/migrations/001_initial.sql` vào database test.
+4. Chạy `npm run dev` để mở app đầy đủ cùng Vercel Functions và API đăng nhập. Chỉ dùng `npm run dev:vite` để xem giao diện tĩnh; đăng nhập sẽ không hoạt động. PIN local mặc định là `1234`.
+
+`N8N_BASE_URL` local dùng `/webhook-test` và Sheet test. Production phải dùng `/webhook` và Sheet production. Không đưa `.env.local` hoặc dữ liệu Sheet vào Git.
+
+## Kiểm tra
 
 ```sh
-python3 -m http.server 8000 --bind 127.0.0.1
+npm test
+npm run build
 ```
 
-Mở `http://127.0.0.1:8000/mobile-app/`. Trạng thái đơn và phiên được lưu trong `localStorage`; ảnh bằng chứng lưu trong `IndexedDB` của trình duyệt.
+## Triển khai và vận hành
 
-Kiểm tra luồng trạng thái:
-
-```sh
-node --test mobile-app/domain.test.mjs
-```
-
-Đây là bản trình diễn cục bộ, chưa kết nối API, bản đồ hoặc xác thực thật. Dữ liệu khách là giả; xóa dữ liệu trang web sẽ xóa trạng thái và ảnh đã lưu.
+Xem [docs/OPERATIONS.md](docs/OPERATIONS.md) để tạo project Vercel riêng, cấu hình Neon và Blob, chuẩn bị workflow n8n, backup, khôi phục và các điều kiện trước khi dùng dữ liệu đơn thật. Project dùng một cron bảo trì mỗi ngày; thao tác đồng bộ thông thường chạy ngay sau khi ghi Postgres và trên client khi có mạng.

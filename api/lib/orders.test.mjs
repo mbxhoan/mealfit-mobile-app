@@ -1,0 +1,46 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { canReuseClaim, normalizeSheetOrder, toN8nBody } from "./orders.mjs";
+
+test("Sheet row normalization preserves payment and delivery status for operations", () => {
+  const order = normalizeSheetOrder({
+    "Mã đơn": "DH0899", "Tên KH": "Khách A", "SĐT": "0900000000", "Địa chỉ": "Quận 1",
+    "Phí ship": "15,000", "Sau giảm (đ)": "100,000", "Đã thanh toán": "40,000",
+    "TỔNG THANH TOÁN": "75,000", "Trạng thái đơn": "Chưa thanh toán", "Trạng thái giao hàng": "Đang giao hàng", Shipper: "Hiếu"
+  });
+  assert.equal(order.id, "DH0899");
+  assert.equal(order.total, 115_000);
+  assert.equal(order.paidAmount, 40_000);
+  assert.equal(order.remainingDue, 75_000);
+  assert.equal(order.assignedUserId, "hieu");
+  assert.equal(order.deliveryStatus, "Đang giao hàng");
+});
+
+test("normalized order details keep item rows supplied by the Sheet workflow", () => {
+  const order = normalizeSheetOrder({
+    "Mã đơn": "DH0899", "Tên KH": "Khách A", items: [{ name: "Ức gà", quantity: 2, unitPrice: 48_000, total: 96_000 }]
+  });
+  assert.deepEqual(order.items, [{ name: "Ức gà", quantity: 2, unitPrice: 48_000, total: 96_000 }]);
+});
+
+test("n8n updates send the full validated body and cumulative paid amount", () => {
+  const body = toN8nBody({
+    id: "DH0899", customer: "Khách A", phone: "0900000000", address: "Quận 1", shipperName: "Hiếu",
+    total: 250_000, paidAmount: 70_000, remainingDue: 180_000, paymentStatus: "Chưa thanh toán",
+    deliveryStatus: "Đã giao hàng", note: "", sourceRevision: 4
+  }, "sheet-test");
+  assert.deepEqual(body, {
+    sheet_id: "sheet-test", code: "DH0899", shipper: "Hiếu", total: "70000",
+    payment_staus: "Chưa thanh toán", shipping_status: "Đã giao hàng", note: "", expected_revision: 4
+  });
+  assert.throws(() => toN8nBody({
+    id: "DH0899", customer: "Khách A", phone: "0900000000", address: "Quận 1", shipperName: "Hiếu",
+    total: 250_000, paidAmount: -1, paymentStatus: "Chưa thanh toán", deliveryStatus: "Đã giao hàng", note: ""
+  }, "sheet-test"), /đã thanh toán/);
+});
+
+test("claim retry succeeds only for the same shipper while the order is still pending", () => {
+  assert.equal(canReuseClaim({ assigned_user_id: "hieu", shipping_status: "Chưa giao hàng" }, "hieu"), true);
+  assert.equal(canReuseClaim({ assigned_user_id: "hoan", shipping_status: "Chưa giao hàng" }, "hieu"), false);
+  assert.equal(canReuseClaim({ assigned_user_id: "hieu", shipping_status: "Đang giao hàng" }, "hieu"), false);
+});
