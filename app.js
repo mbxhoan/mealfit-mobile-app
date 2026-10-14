@@ -188,8 +188,8 @@ function loginScreen() {
   return `<main class="login-page">
     <header class="login-topbar"><span aria-hidden="true"></span><img src="/logo-transparent.png" alt="Mealfit"/>${networkIndicator()}</header>
     <form class="login-form" id="login-form">
-      <div class="form-field"><label for="username">Tài khoản</label><select class="select" id="username" name="username" required><option value="">Chọn tài khoản</option>${Object.entries(accounts).map(([id, name]) => `<option value="${id}">${name}</option>`).join("")}</select></div>
-      <div class="form-field"><label for="pin">Mã PIN</label><input class="input pin-input" id="pin" name="pin" type="text" inputmode="numeric" pattern="[0-9]{4,6}" minlength="4" maxlength="6" placeholder="Nhập PIN" autocomplete="off" required /></div>
+      <div class="form-field"><label for="username">Tài khoản</label><select class="select" id="username" name="username" autocomplete="username" required><option value="">Chọn tài khoản</option>${Object.entries(accounts).map(([id, name]) => `<option value="${id}">${name}</option>`).join("")}</select></div>
+      <div class="form-field"><label for="pin">Mã PIN</label><input class="input pin-input" id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,6}" minlength="4" maxlength="6" placeholder="Nhập PIN" autocomplete="current-password" required /></div>
       <p class="login-error" id="login-error" aria-live="polite"></p>
       <button class="button full" type="submit">Đăng nhập ${icon("chevron", 18)}</button>
     </form>
