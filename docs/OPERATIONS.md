@@ -27,9 +27,10 @@ Không dùng chung database, Blob token, PIN hay webhook secret giữa Preview v
 
 Vercel là nơi duy nhất gọi n8n. Workflow cần cung cấp:
 
-- `GET /shipping-orders?sheet_id=…&limit=…&cursor=…&since=…` trả `{ data: [], nextCursor: null }`; phân trang bằng mã đơn ổn định, `since` lọc theo `updated_at`, và gồm cả `Đã huỷ đơn`.
+- `GET /shipping-orders?sheet_id=…&shipper=…&limit=…&cursor=…&since=…` trả `{ data: [], nextCursor: null }`; phân trang theo mã đơn, `since` lọc theo `updated_at`. Khi có `shipper`, trả tất cả hàng có mã đơn được gán tên đó, kể cả thiếu tên khách và mọi trạng thái giao hàng. Không truyền `shipper` thì trả tất cả shipper.
 - `GET /shipping-order?sheet_id=…&code=…` trả một dòng theo đúng các cột trong Sheet.
-- `POST /shipping-order` nhận đủ `sheet_id`, `code`, `shipper`, `total`, `payment_staus`, `shipping_status`, `note`, và `expected_revision`. `total` là số đã thanh toán lũy kế. Phản hồi phải có `revision` mới; trả HTTP 409 nếu `expected_revision` đã cũ.
+- `POST /shipping-order` nhận đủ `sheet_id`, `code`, `shipper`, `total`, `payment_staus`, `shipping_status`, `note`, `expected_revision`, và `operation_id`. `total` là số đã thanh toán lũy kế. Export n8n chuyển yêu cầu qua Apps Script khóa hàng và kiểm tra phiên bản; phản hồi phải có `{ status: "ok", revision }` hoặc `{ status: "conflict", revision }`.
+- Cấu hình `MEALFIT_APPS_SCRIPT_URL` và `MEALFIT_SYNC_SECRET` trong n8n, không cấu hình trong Vercel. Apps Script phải có `MEALFIT_SYNC_SECRET` cùng danh sách `MEALFIT_ALLOWED_SHEETS` trong Script Properties. Export để workflow ở trạng thái chưa bật; triển khai và thử trên Sheet test trước khi publish production.
 - `POST /upload-medias` nhận multipart `sheet_id`, `folder_id`, `code`, `name`, `message`, `media_id`, `files`; chỉ trả thành công sau khi file đã được lưu. `media_id` là khóa idempotency.
 - Mọi webhook yêu cầu n8n Header Auth credential có header name `Authorization` và giá trị `Bearer <N8N_API_KEY>`; gắn credential này vào cả bốn Webhook node. Export không chứa credential. `N8N_BASE_URL` test chỉ hoạt động khi workflow đang nghe test event; production URL chỉ hoạt động sau khi publish workflow.
 
@@ -39,8 +40,9 @@ Giá trị hợp lệ: giao hàng `Chưa giao hàng`, `Đang giao hàng`, `Đã 
 
 ## Đồng bộ và khôi phục
 
-- UI xác nhận thay đổi sau khi IndexedDB ghi xong; bản ghi đồng bộ cục bộ giữ cùng operation ID và body trong mỗi lần retry. App kiểm tra thay đổi từ Sheet mỗi phút; endpoint server dùng cửa sổ sửa đổi có overlap để không bỏ lỡ cập nhật gần thời điểm đồng bộ.
-- API dùng revision ở Postgres, hàng đợi theo thứ tự phiên bản và idempotency key khi đẩy n8n. Worker giữ khóa advisory Postgres trong lúc gửi, giãn các lần gọi tối thiểu 1,1 giây, nên các cập nhật `shipping-order` từ nhiều instance Vercel được xử lý lần lượt; bản ghi worker bị ngắt được thử lại sau 2 phút. Admin xử lý xung đột ở mục **Xung đột**.
+- UI xác nhận thay đổi sau khi IndexedDB ghi xong; bản ghi đồng bộ cục bộ giữ cùng operation ID và body trong mỗi lần retry. App chỉ tải Sheet khi người dùng yêu cầu đồng bộ (ngoại lệ: một lần khi cài lần đầu). Khi đồng bộ thủ công, app gửi các thao tác trên thiết bị trước; API xử lý hàng đợi Sheet rồi mới tải lại dữ liệu. Nếu còn đơn chờ, lỗi hoặc xung đột, lượt tải dừng và app báo số cập nhật chưa xác nhận.
+- API dùng revision ở Postgres, hàng đợi theo thứ tự phiên bản và idempotency key khi đẩy n8n. Các bản chưa từng gửi của cùng đơn được gộp theo trạng thái mới nhất; bản đã thử gửi được giữ nguyên để retry an toàn. Worker giữ khóa advisory Postgres trong lúc gửi, giãn các lần gọi tối thiểu 1,1 giây, nên các cập nhật `shipping-order` từ nhiều instance Vercel được xử lý lần lượt; bản ghi worker bị ngắt được thử lại sau 2 phút. Admin xử lý xung đột ở mục **Xung đột**.
+- Sau lượt tải đầy đủ, mỗi tài khoản shipper có snapshot mã đơn từ Sheet. Danh sách và thống kê của shipper chỉ dùng snapshot đó, cộng các đơn còn trong phiên đang mở; các đơn lịch sử vẫn được lưu để tra cứu.
 - Vercel Blob lưu ảnh riêng tư trước khi upload n8n. Ảnh và hàng đợi trên thiết bị được giữ khi mất mạng; cần mở lại app có mạng để thử đồng bộ.
 - Cron mỗi ngày nhập thay đổi từ Sheet, chạy hàng đợi và lưu snapshot JSON riêng tư. Cron Hobby chỉ chạy tối đa một lần/ngày và trễ theo giờ; nâng Pro để có lịch nền dày hơn. Sao chép backup sang vị trí độc lập, giới hạn quyền đọc, và thử khôi phục định kỳ.
 - Khôi phục database từ snapshot cần tạo database/branch mới, kiểm tra JSON và nạp lại theo dependency: orders, sessions, operations, payments, outbox, media, conflicts, audit, auth attempts, sync metadata. Không ghi đè production khi chưa kiểm tra backup.

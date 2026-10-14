@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 const workflow = JSON.parse(readFileSync(new URL("../../docs/api/n8n.json", import.meta.url), "utf8"));
 
-test("n8n webhook export protects all endpoints and supports delta pagination", () => {
+test("n8n webhook export protects endpoints and returns complete paged shipper orders", () => {
   const webhooks = workflow.nodes.filter(node => node.type === "n8n-nodes-base.webhook");
   const names = workflow.nodes.map(node => node.name);
   assert.equal(webhooks.length, 6);
@@ -15,12 +15,46 @@ test("n8n webhook export protects all endpoints and supports delta pagination", 
   assert.match(pager.parameters.jsCode, /query\.since/);
   assert.match(pager.parameters.jsCode, /row\.updated_at/);
   assert.match(pager.parameters.jsCode, /nextCursor/);
-  const detail = workflow.nodes.find(node => node.name === "get order line items");
-  const builder = workflow.nodes.find(node => node.name === "Build order detail");
-  assert.equal(detail.parameters.sheetName.value, "=Chi_tiet_don_hang");
-  assert.match(builder.parameters.jsCode, /Giá bán\/gói/);
-  assert.match(builder.parameters.jsCode, /Thành tiền/);
+  assert.equal(workflow.connections.Sort.main[0][0].node, "Page orders");
+  assert.equal(workflow.connections["get orders by shipper"].main[0][0].node, "if orders exist");
+  assert.equal(workflow.nodes.find(node => node.name === "get orders").parameters.filtersUI, undefined);
+  assert.match(workflow.nodes.find(node => node.name === "if orders exist").parameters.conditions.conditions[0].leftValue, /Mã đơn/);
+  const emptyResponse = workflow.nodes.find(node => node.name === "Respond to Webhook1");
+  assert.equal(emptyResponse.parameters.respondWith, "json");
+  assert.match(emptyResponse.parameters.responseBody, /nextCursor: null/);
+
+  const runPager = Function("$input", "$", pager.parameters.jsCode);
+  const rows = [
+    { "Mã đơn": "DH0003", "Trạng thái giao hàng": "Đã giao hàng", updated_at: "2026-10-14T10:00:00Z" },
+    { "Mã đơn": "DH0002", "Tên KH": "Khách", "Trạng thái giao hàng": "Đang giao hàng", updated_at: "2026-10-14T10:00:00Z" },
+    { "Mã đơn": "DH0001", "Trạng thái giao hàng": "Chưa giao hàng", updated_at: "2026-10-14T10:00:00Z" },
+    { "Mã đơn": "DH0000", "Trạng thái giao hàng": "Đã huỷ đơn", updated_at: "2026-10-14T10:00:00Z" }
+  ];
+  const page = query => runPager({ all: () => rows.map(json => ({ json })) }, () => ({ first: () => ({ json: { query } }) }))[0].json;
+  const first = page({ limit: 2 });
+  assert.deepEqual(first.data.map(row => row["Mã đơn"]), ["DH0003", "DH0002"]);
+  assert.equal(first.data[0]["Tên KH"], undefined);
+  assert.equal(first.nextCursor, "DH0002");
+  const second = page({ limit: 2, cursor: first.nextCursor });
+  assert.deepEqual(second.data.map(row => row["Mã đơn"]), ["DH0001", "DH0000"]);
+  assert.equal(second.nextCursor, null);
   assert.equal(workflow.active, false);
+});
+
+test("n8n writes revisioned updates through the locked Apps Script bridge", () => {
+  const webhooks = workflow.nodes.find(node => node.name === "upsert /shipping-order");
+  const builder = workflow.nodes.find(node => node.name === "Build Sheet revision request");
+  const writer = workflow.nodes.find(node => node.name === "Write revision to Google Sheet");
+  const responder = workflow.nodes.find(node => node.name === "Respond to Webhook3");
+  assert.equal(workflow.connections[webhooks.name].main[0][0].node, builder.name);
+  assert.equal(workflow.connections[builder.name].main[0][0].node, writer.name);
+  assert.equal(workflow.connections[writer.name].main[0][0].node, responder.name);
+  for (const field of ["sheet_id", "code", "shipper", "total", "payment_staus", "shipping_status", "note", "expected_revision", "operation_id", "script_secret"]) {
+    assert.match(builder.parameters.jsCode, new RegExp(`\\b${field}\\b`));
+  }
+  assert.match(builder.parameters.jsCode, /\$env\.MEALFIT_SYNC_SECRET/);
+  assert.equal(writer.parameters.url, "={{ $env.MEALFIT_APPS_SCRIPT_URL }}");
+  assert.match(responder.parameters.responseBody, /JSON\.stringify\(\$json\)/);
 });
 
 test("n8n log webhook waits for the append and writes only to app_logs", () => {
@@ -29,6 +63,8 @@ test("n8n log webhook waits for the append and writes only to app_logs", () => {
   const append = workflow.nodes.find(node => node.name === "log");
   assert.match(spec, /https:\/\/n8n\.delfi\.vn\/webhook-test\/log/);
   assert.match(spec, /"sheet_name": "app_logs"/);
+  assert.match(spec, /"expected_revision": 0/);
+  assert.match(spec, /"operation_id": "00000000-0000-4000-8000-000000000001"/);
   assert.equal(webhook.parameters.path, "log");
   assert.equal(webhook.parameters.httpMethod, "POST");
   assert.equal(webhook.parameters.authentication, "headerAuth");
@@ -37,6 +73,8 @@ test("n8n log webhook waits for the append and writes only to app_logs", () => {
   assert.equal(append.parameters.columns.matchingColumns, undefined);
   assert.equal(append.onError, undefined);
   assert.ok(workflow.connections[webhook.name].main[0].some(edge => edge.node === append.name));
+  assert.match(spec, /Bearer \{\{N8N_API_KEY\}\}/);
+  assert.match(spec, /\{\{ZALO_BOT_TOKEN\}\}/);
 });
 
 test("Apps Script writes revisions under a lock and validates full update payload", () => {

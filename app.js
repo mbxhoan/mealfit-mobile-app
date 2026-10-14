@@ -35,7 +35,7 @@ import {
   ackAppLog, ackOutbox, commitState, deletePhoto as deleteLocalPhoto, enqueueAppLog, failAppLog, failOutbox, getMeta, getOutbox,
   getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
   nextAppLog,
-  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, claimFirstInstallSync
+  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, claimFirstInstallSync, writeStateSnapshot
 } from "./local-store.mjs";
 import { inject } from '@vercel/analytics';
 
@@ -99,7 +99,9 @@ const currentView = () => viewStack.at(-1);
 const orderById = id => state.orders.find(order => order.id === id);
 const activeSession = () => state.sessions.find(session => session.id === state.activeSessionId && ["notStarted", "active", "paused"].includes(session.status));
 const isStaff = () => role === "admin" || role === "user";
-const canSeeOrder = order => role !== "shipper" || !order.assignedUserId || order.assignedUserId === user?.id;
+const canSeeOrder = order => role !== "shipper" || (Array.isArray(state.visibleOrderIds)
+  ? state.visibleOrderIds.includes(order.id)
+  : !order.assignedUserId || order.assignedUserId === user?.id);
 const money = amount => `${Math.round(Number(amount) || 0).toLocaleString("vi-VN")}đ`;
 const callNumber = order => String(order?.phone ?? "").replace(/\D/g, "");
 
@@ -256,10 +258,11 @@ function loginScreen() {
 }
 
 function orderCounts() {
+  const visibleOrders = role === "shipper" && Array.isArray(state.visibleOrderIds) ? state.orders.filter(canSeeOrder) : state.orders;
   return {
-    pending: serverCounts["Chưa giao hàng"] ?? state.orders.filter(order => order.deliveryStatus === "Chưa giao hàng").length,
-    transit: serverCounts["Đang giao hàng"] ?? state.orders.filter(order => order.deliveryStatus === "Đang giao hàng").length,
-    delivered: serverCounts["Đã giao hàng"] ?? state.orders.filter(order => order.deliveryStatus === "Đã giao hàng").length
+    pending: serverCounts["Chưa giao hàng"] ?? visibleOrders.filter(order => order.deliveryStatus === "Chưa giao hàng").length,
+    transit: serverCounts["Đang giao hàng"] ?? visibleOrders.filter(order => order.deliveryStatus === "Đang giao hàng").length,
+    delivered: serverCounts["Đã giao hàng"] ?? visibleOrders.filter(order => order.deliveryStatus === "Đã giao hàng").length
   };
 }
 
@@ -860,10 +863,12 @@ async function updateState(next, message) {
 }
 
 async function syncQueued() {
-  if (!user || !navigator.onLine || syncRunning) return;
+  if (!user || !navigator.onLine) throw new Error("Cần kết nối mạng để đồng bộ các thay đổi đang chờ.");
+  if (syncRunning) throw new Error("Đang đồng bộ thay đổi khác. Vui lòng đợi hoàn tất rồi thử lại.");
   syncRunning = true;
   render();
   let hasOperations = false;
+  let syncFailure = null;
   try {
     for (let attempt = 0; attempt < 4; attempt++) {
       const batch = await nextOutboxBatch(user.id, 40);
@@ -887,8 +892,7 @@ async function syncQueued() {
           else if (result) await ackOutbox(item.id, result.revision);
           else await failOutbox(item.id, error.status === 409);
         }
-        if (error.status === 409) showError(error);
-        else if (!syncErrorShown) { syncErrorShown = true; showError(error); }
+        syncFailure = error;
         break;
       }
     }
@@ -900,11 +904,14 @@ async function syncQueued() {
       syncErrorShown = false;
     }
   } catch (error) {
-    if (!syncErrorShown) { syncErrorShown = true; showError(error); }
+    syncFailure ||= error;
   } finally {
     syncRunning = false;
     render();
   }
+  const pending = (await getOutbox(user.id)).filter(item => item.status !== "done");
+  if (syncFailure) throw syncFailure;
+  if (pending.length) throw new Error(`Còn ${pending.length} thay đổi chưa gửi được. Thử đồng bộ lại trước khi tải danh sách đơn.`);
 }
 
 async function syncQueuedAppLog() {
@@ -977,15 +984,19 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   if (sheet && sheetSyncRunning) return;
   if (sheet) { sheetSyncRunning = true; render(); }
   try {
+    if (sheet) await syncQueued();
     try { await refreshAccounts(); } catch { /* order sync can use the authenticated account already loaded */ }
     if (sheet) await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 120_000 });
     let cursor = null;
     let first = true;
+    let shipperSnapshot = false;
+    const visibleOrderIds = new Set();
     do {
       const params = new URLSearchParams({ limit: "100" });
       if (cursor) params.set("cursor", cursor);
       const page = await apiRequest(`/api/orders?${params}`);
-      if (first) { serverCounts = page.counts || {}; first = false; }
+      if (first) { serverCounts = page.counts || {}; shipperSnapshot = page.shipperSnapshot === true; first = false; }
+      if (shipperSnapshot) for (const order of page.data || []) if (order?.id) visibleOrderIds.add(order.id);
       state = normalizeState(await mergeRemote({ orders: page.data || [] }, user.id));
       lastPersistedState = cloneState(state);
       cursor = page.nextCursor;
@@ -993,6 +1004,13 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
     } while (cursor);
     const [sessions] = await Promise.all([apiRequest("/api/sessions")]);
     state = normalizeState(await mergeRemote({ sessions: sessions.data || [] }, user.id));
+    if (role === "shipper" && shipperSnapshot) {
+      for (const session of state.sessions) {
+        if (["notStarted", "active", "paused"].includes(session.status)) for (const id of session.orderIds || []) visibleOrderIds.add(id);
+      }
+      state.visibleOrderIds = [...visibleOrderIds];
+      await writeStateSnapshot(state, user.id);
+    }
     lastPersistedState = cloneState(state);
     if (role === "admin") {
       try { conflictCount = (await apiRequest("/api/conflicts")).data.length; } catch { conflictCount = 0; }
@@ -1035,6 +1053,7 @@ async function syncOrderDetail(orderId) {
   if (!navigator.onLine || !user) throw new Error("Cần kết nối mạng để đồng bộ đơn hàng.");
   assertWebhookRetryAllowed();
   try {
+    await syncQueued();
     const result = await apiRequest(`/api/orders/${encodeURIComponent(orderId)}?refresh=1`);
     state = normalizeState(await mergeRemote({ orders: [result.data] }, user.id));
     lastPersistedState = cloneState(state);
@@ -1243,6 +1262,7 @@ function cancelRouteDrag(restore = true) {
   const drag = routeDrag;
   if (!drag) return;
   routeDrag = null;
+  clearTimeout(drag.holdTimer);
   if (routeDragFrame) cancelAnimationFrame(routeDragFrame);
   routeDragFrame = null;
   if (restore && drag.element.parentElement === drag.parent && drag.element.nextElementSibling !== drag.originalNext) {
@@ -1253,10 +1273,11 @@ function cancelRouteDrag(restore = true) {
   drag.parent.classList.remove("route-drag-active");
   drag.handle.classList.remove("dragging");
   document.body.classList.remove("route-dragging");
-  if (app.hasPointerCapture?.(drag.pointerId)) app.releasePointerCapture(drag.pointerId);
+  if (drag.pointerId != null && app.hasPointerCapture?.(drag.pointerId)) app.releasePointerCapture(drag.pointerId);
 }
 
 function beginRouteDrag(event) {
+  if (event.pointerType === "touch") return;
   const handle = event.target.closest("[data-drag-order]");
   if (routeDrag || !handle || event.isPrimary === false || (event.button != null && event.button !== 0)) return;
   const session = activeSession();
@@ -1270,6 +1291,23 @@ function beginRouteDrag(event) {
   app.setPointerCapture?.(event.pointerId);
 }
 
+function beginTouchRouteDrag(event) {
+  const handle = event.target.closest("[data-drag-order]");
+  if (routeDrag || !handle || event.touches.length !== 1) return;
+  const session = activeSession();
+  const element = handle.closest("[data-order-id]");
+  const parent = element?.parentElement;
+  if (role !== "shipper" || !session || !["notStarted", "active"].includes(session.status) || !element || !parent?.dataset.routeShift || element.dataset.completed === "true") return;
+  const touch = event.touches[0];
+  edgeTouch = null;
+  const drag = routeDrag = { id: handle.dataset.dragOrder, handle, element, parent, originalNext: element.nextElementSibling,
+    pointerId: null, touchId: touch.identifier, touch: true, startX: touch.clientX, startY: touch.clientY,
+    lastX: touch.clientX, lastY: touch.clientY, active: false };
+  drag.holdTimer = setTimeout(() => {
+    if (routeDrag === drag) activateRouteDrag(drag);
+  }, 1500);
+}
+
 function updateRouteDrag(event) {
   if (!routeDrag || event.pointerId !== routeDrag.pointerId) return;
   event.preventDefault();
@@ -1277,6 +1315,22 @@ function updateRouteDrag(event) {
   routeDrag.lastY = event.clientY;
   if (!routeDrag.active && Math.hypot(event.clientX - routeDrag.startX, event.clientY - routeDrag.startY) >= 8) activateRouteDrag(routeDrag);
   if (routeDrag.active) scheduleRouteDragFrame();
+}
+
+function updateTouchRouteDrag(event) {
+  const drag = routeDrag;
+  if (!drag?.touch) return;
+  if (event.touches.length !== 1) { cancelRouteDrag(); return; }
+  const touch = [...event.touches].find(item => item.identifier === drag.touchId);
+  if (!touch) { cancelRouteDrag(); return; }
+  if (!drag.active) {
+    if (Math.hypot(touch.clientX - drag.startX, touch.clientY - drag.startY) >= 8) cancelRouteDrag();
+    return;
+  }
+  event.preventDefault();
+  drag.lastX = touch.clientX;
+  drag.lastY = touch.clientY;
+  scheduleRouteDragFrame();
 }
 
 async function finishRouteDrag(event, cancelled = false) {
@@ -1302,6 +1356,14 @@ async function finishRouteDrag(event, cancelled = false) {
     announceOrderPosition(drag.id, targetIndex);
     await updateState(next, "Đã sắp xếp lộ trình.");
   } catch (error) { render(); flash(error.message); }
+}
+
+function finishTouchRouteDrag(event, cancelled = false) {
+  const drag = routeDrag;
+  if (!drag?.touch) return;
+  const touch = [...event.changedTouches].find(item => item.identifier === drag.touchId);
+  if (cancelled || !touch) { cancelRouteDrag(); return; }
+  void finishRouteDrag({ pointerId: null, clientX: touch.clientX, clientY: touch.clientY });
 }
 
 function setButtonBusy(button, busy) {
@@ -1513,7 +1575,7 @@ app.addEventListener("click", async event => {
   if (action === "refresh") {
     if (syncRunning || sheetSyncRunning || orderSyncRunningId) return;
     if (!setButtonBusy(button, true)) return;
-    try { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đã làm mới dữ liệu đơn hàng."); }
+    try { await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đã làm mới dữ liệu đơn hàng."); }
     catch (error) { showError(error); }
     finally { setButtonBusy(button, false); }
     return;
@@ -1534,7 +1596,7 @@ app.addEventListener("click", async event => {
     modal = null; render();
     try {
       if (detailOrderId) { await syncOrderDetail(detailOrderId); flash(`Đã đồng bộ đơn ${detailOrderId}.`); }
-      else { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đồng bộ đã hoàn tất."); }
+      else { await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đồng bộ đã hoàn tất."); }
     } catch (error) { if (error.status === 401) void logout(); else showError(error); }
     finally { if (detailOrderId) { orderSyncRunningId = null; render(); } }
     return;
@@ -1849,6 +1911,10 @@ app.addEventListener("pointermove", updateRouteDrag);
 app.addEventListener("pointerup", event => finishRouteDrag(event));
 app.addEventListener("pointercancel", event => finishRouteDrag(event, true));
 app.addEventListener("lostpointercapture", event => finishRouteDrag(event, true));
+app.addEventListener("touchstart", beginTouchRouteDrag, { passive: true });
+app.addEventListener("touchmove", updateTouchRouteDrag, { passive: false });
+app.addEventListener("touchend", event => finishTouchRouteDrag(event));
+app.addEventListener("touchcancel", event => finishTouchRouteDrag(event, true), { passive: true });
 app.addEventListener("selectstart", event => {
   if (routeDrag || event.target.closest("[data-drag-order]")) event.preventDefault();
 });
@@ -1859,6 +1925,7 @@ app.addEventListener("dragstart", event => {
   if (routeDrag || event.target.closest("[data-drag-order]")) event.preventDefault();
 });
 window.addEventListener("blur", () => cancelRouteDrag());
+document.addEventListener("visibilitychange", () => { if (document.hidden) cancelRouteDrag(); });
 window.addEventListener("keydown", event => {
   if (event.key === "Escape" && routeDrag) { event.preventDefault(); cancelRouteDrag(); }
 });

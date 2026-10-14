@@ -5,6 +5,7 @@ import { sheetId, fetchSheetOrder, pushSheetOrder } from "./n8n.mjs";
 import { importSheetOrders } from "./sync.mjs";
 
 export async function queueUpstream(client, operationId, order, revision) {
+  await client.query("DELETE FROM mealfit_upstream_outbox WHERE order_code = $1 AND status = 'queued' AND attempts = 0", [order.id]);
   const state = await client.query(`SELECT o.source_revision,
     (SELECT count(*)::int FROM mealfit_upstream_outbox q WHERE q.order_code = o.code AND q.status IN ('queued', 'sending', 'failed')) AS pending
     FROM mealfit_orders o WHERE o.code = $1`, [order.id]);

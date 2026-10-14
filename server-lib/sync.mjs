@@ -7,6 +7,25 @@ export function recordBatches(records, size = 100) {
   return batches;
 }
 
+export function sheetUpdateMismatches(updates, rows) {
+  const latest = new Map();
+  for (const update of updates) {
+    const code = String(update.order_code || update.code || "").trim();
+    if (!code) continue;
+    const current = latest.get(code);
+    if (!current || Number(update.target_revision) > Number(current.target_revision)) latest.set(code, update);
+  }
+  const sheetOrders = new Map(rows.map(row => [String(row?.["Mã đơn"] || row?.code || "").trim(), row]));
+  return [...latest].filter(([code, update]) => {
+    const row = sheetOrders.get(code);
+    const body = update.request_body || {};
+    return !row
+      || Number(row.revision ?? row.Revision) !== Number(body.expected_revision) + 1
+      || String(row["Trạng thái giao hàng"] ?? row.shipping_status ?? "") !== String(body.shipping_status ?? "")
+      || String(row["Trạng thái đơn"] ?? row.payment_status ?? "") !== String(body.payment_staus ?? "");
+  }).map(([code]) => code);
+}
+
 export async function importSheetOrders(rows) {
   const orders = rows.map(row => normalizeSheetOrder(row)).filter(Boolean);
   if (!orders.length) return 0;

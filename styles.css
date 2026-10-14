@@ -352,7 +352,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mini-button { width: 40px; height: 40px; display: inline-grid; flex: 0 0 40px; place-items: center; border: 1px solid var(--line); border-radius: 11px; background: #fff; color: #4c4e52; cursor: pointer; }
 .mini-button svg { width: 17px; height: 17px; }
 .drag-handle, .drag-handle * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-.drag-handle { color: #65686d; cursor: grab; touch-action: none; }
+.drag-handle { color: #65686d; cursor: grab; touch-action: pan-y; }
 .drag-handle:active, .drag-handle.dragging { background: var(--accent-soft); color: var(--accent); cursor: grabbing; }
 .route-dragging, .route-dragging * { -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; }
 .route-drag-active > [data-order-id]:not(.dragging) { opacity: .68; filter: blur(.7px); }
