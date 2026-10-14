@@ -2,6 +2,7 @@ import { waitUntil } from "@vercel/functions";
 import { put } from "@vercel/blob";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
+import { sheetShipperNames } from "../server-lib/accounts.mjs";
 import { getSql } from "../server-lib/db.mjs";
 import { fetchSheetOrders, fetchSheetOrdersForShippers } from "../server-lib/n8n.mjs";
 import { importSheetOrders, markSheetPull } from "../server-lib/sync.mjs";
@@ -59,8 +60,7 @@ export default handler(async (req, res) => {
   if (!recent) {
     try {
       const previousPull = meta[0]?.updated_at ? new Date(new Date(meta[0].updated_at).valueOf() - 120_000).toISOString() : "";
-      const shipperNames = user.role === "shipper" ? user.shipperNames : [""];
-      const pull = await fetchSheetOrdersForShippers({ shippers: shipperNames, limit: 500, modifiedSince: previousPull });
+      const pull = await fetchSheetOrdersForShippers({ shippers: sheetShipperNames(user), limit: 500, modifiedSince: previousPull });
       received = pull.received;
       pages = pull.pages;
       stage = "postgres-import";

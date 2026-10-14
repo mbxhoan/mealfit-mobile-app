@@ -44,6 +44,10 @@ export function appLogRetryDelay(attempts) {
   return Math.min(300_000, 1_000 * (2 ** Math.min(Math.max(0, Number(attempts) || 0), 8)));
 }
 
+export function isFirstInstallSync({ attempted, lastUser, hasStoredState }) {
+  return !attempted && !lastUser && !hasStoredState;
+}
+
 function complete(transaction) {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
@@ -244,12 +248,6 @@ export async function nextAppLog(ownerId, now = Date.now()) {
   return item ? clone(item) : null;
 }
 
-export async function hasPendingAppLogs(ownerId) {
-  const db = await openLocalDb();
-  const values = await requestValue(db.transaction("logs", "readonly").objectStore("logs").getAll());
-  return values.some(item => item.ownerId === ownerId);
-}
-
 export async function ackAppLog(id) {
   const db = await openLocalDb();
   const tx = db.transaction("logs", "readwrite");
@@ -290,6 +288,25 @@ export async function setMeta(key, value) {
   const tx = db.transaction("meta", "readwrite");
   tx.objectStore("meta").put({ key, value, updatedAt: Date.now() });
   await complete(tx);
+}
+
+export async function claimFirstInstallSync() {
+  const db = await openLocalDb();
+  const tx = db.transaction(["meta", "state"], "readwrite");
+  const meta = tx.objectStore("meta");
+  const [attempted, lastUser, stateKeys] = await Promise.all([
+    requestValue(meta.get("initialSyncAttempted")),
+    requestValue(meta.get("lastUser")),
+    requestValue(tx.objectStore("state").getAllKeys())
+  ]);
+  const shouldSync = isFirstInstallSync({
+    attempted: Boolean(attempted?.value),
+    lastUser: lastUser?.value,
+    hasStoredState: stateKeys.some(key => String(key).startsWith("state:"))
+  });
+  meta.put({ key: "initialSyncAttempted", value: true, updatedAt: Date.now() });
+  await complete(tx);
+  return shouldSync;
 }
 
 export async function getOrderPhotos(orderId) {

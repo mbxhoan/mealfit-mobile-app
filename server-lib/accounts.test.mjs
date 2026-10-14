@@ -1,12 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateAccountDirectory } from "./accounts.mjs";
+import { sheetShipperNames, validateAccountDirectory } from "./accounts.mjs";
 
 const initial = [
   { id: "admin", name: "Admin", role: "admin", aliases: [] },
   { id: "user", name: "Nhân viên", role: "user", aliases: [] },
   { id: "hieu", name: "Hiếu", role: "shipper", aliases: [] }
 ];
+
+test("order sync always filters a shipper by current and legacy names", () => {
+  assert.deepEqual(sheetShipperNames({ role: "shipper", name: "Hoàn", shipperNames: ["Hoàn", "Hoan"] }), ["Hoàn", "Hoan"]);
+  assert.deepEqual(sheetShipperNames({ role: "shipper", name: "Hiếu" }), ["Hiếu"]);
+  assert.deepEqual(sheetShipperNames({ role: "admin", name: "Admin" }), [""]);
+  assert.throws(() => sheetShipperNames({ role: "shipper", name: " " }), error => error.code === "SHIPPER_NAME_MISSING");
+});
 
 test("renaming a shipper preserves the old Sheet name as an alias and keeps the account id", () => {
   const result = validateAccountDirectory({

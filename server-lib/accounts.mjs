@@ -11,6 +11,14 @@ const accountFromRow = row => ({
 });
 const nameKey = value => String(value || "").trim().toLocaleLowerCase("vi-VN");
 
+export function sheetShipperNames(user) {
+  if (user?.role !== "shipper") return [""];
+  const names = [...new Set([user.name, ...(Array.isArray(user.shipperNames) ? user.shipperNames : [])]
+    .map(name => String(name || "").trim()).filter(Boolean))];
+  if (!names.length) throw new AppError(500, "SHIPPER_NAME_MISSING", "Tài khoản shipper chưa có tên để lọc đơn hàng.");
+  return names;
+}
+
 export async function getAccount(id) {
   const rows = await getSql()`SELECT id, name, role, aliases FROM mealfit_accounts WHERE id = ${id} LIMIT 1`;
   return rows[0] ? accountFromRow(rows[0]) : null;

@@ -30,9 +30,9 @@ import Webcam from "webcam-easy";
 import { apiRequest as sendApiRequest } from "./api-client.mjs";
 import {
   ackAppLog, ackOutbox, commitState, deletePhoto as deleteLocalPhoto, enqueueAppLog, failAppLog, failOutbox, getMeta, getOutbox,
-  getOrderPhotos as loadOrderPhotos, getPendingPhotos, hasPendingAppLogs, mergeRemote,
+  getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
   nextAppLog,
-  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, writeStateSnapshot
+  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, writeStateSnapshot, claimFirstInstallSync
 } from "./local-store.mjs";
 
 const defaultAccounts = [
@@ -62,11 +62,9 @@ let edgeTouch = null;
 let routeDrag = null;
 let routeDragFrame = null;
 let toastTimer = null;
-let syncTimer = null;
-let appLogTimer = null;
+let networkProbeTimer = null;
 let syncRunning = false;
 let appLogRunning = false;
-let lastAppLogSentAt = 0;
 let photoSyncRunning = false;
 let sheetSyncRunning = false;
 let orderSyncRunningId = null;
@@ -105,17 +103,9 @@ const paymentRecipient = { bank: "VIB", account: "865884858", name: "Phạm Th�
 const dateLabel = value => new Intl.DateTimeFormat("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(value));
 const timeLabel = value => new Intl.DateTimeFormat("vi-VN", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 
-function scheduleAppLogSync(delay = 1_100) {
-  if (!user || !navigator.onLine) return;
-  clearTimeout(appLogTimer);
-  appLogTimer = setTimeout(() => void syncQueued(), delay);
-}
-
 function recordClientLog(type, api, description, details = {}) {
   if (!user || api === "/api/log") return;
-  void enqueueAppLog({ type, api, description, details }, user.id)
-    .then(() => scheduleAppLogSync())
-    .catch(() => {});
+  void enqueueAppLog({ type, api, description, details }, user.id).catch(() => {});
 }
 
 async function apiRequest(path, options = {}) {
@@ -190,7 +180,7 @@ function updateNetworkIndicator() {
   indicator.className = `network-indicator signal-${signal}`;
   indicator.setAttribute("aria-label", user ? `Kiểm tra API · ${networkLabels[signal]}` : networkLabels[signal]);
 }
-window.addEventListener("online", () => { updateNetworkIndicator(); void syncQueued(); });
+window.addEventListener("online", updateNetworkIndicator);
 window.addEventListener("offline", updateNetworkIndicator);
 networkConnection?.addEventListener?.("change", updateNetworkIndicator);
 
@@ -271,7 +261,7 @@ function homeScreen() {
     ] : [])
   ];
   return `<main class="page">
-    <p class="home-date">${lastSyncAt ? `Đồng bộ ${timeLabel(lastSyncAt)}` : "Đơn hàng sẽ tải khi có kết nối"}</p>
+    <p class="home-date">${lastSyncAt ? `Đồng bộ ${timeLabel(lastSyncAt)}` : "Chưa đồng bộ đơn hàng"}</p>
     <div class="home-summary" aria-label="Tóm tắt đơn hàng">
       <div class="summary-cell"><span class="summary-number">${counts.pending}</span><span class="summary-label">Chưa giao</span></div>
       <div class="summary-cell"><span class="summary-number">${counts.transit}</span><span class="summary-label">Đang giao</span></div>
@@ -279,7 +269,7 @@ function homeScreen() {
     </div>
     <div class="menu-grid">${menu.map(item => `<button class="menu-card" data-action="open-${item.action}"><span class="menu-icon">${icon(item.icon, 23)}</span><span><span class="menu-label">${item.title}</span><span class="menu-count">${item.count}</span></span></button>`).join("")}${role === "admin" && conflictCount ? `<button class="menu-card" data-action="open-conflicts"><span class="menu-icon">${icon("orders", 23)}</span><span><span class="menu-label">Xung đột</span><span class="menu-count">${conflictCount} đơn cần xử lý</span></span></button>` : ""}</div>
     ${!state.orders.length ? `<div class="empty-state" style="margin-top:14px">Chưa tải được đơn hàng.<button class="button secondary full" style="margin-top:12px" data-action="refresh">Thử đồng bộ</button></div>` : ""}
-    ${syncRunning || sheetSyncRunning ? `<div class="sync-loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><div class="sync-loading-copy"><strong>Đang đồng bộ đơn hàng</strong><span class="sync-loading-skeleton" aria-hidden="true"><i></i><i></i><i></i></span></div></div>` : `<p class="sync-state" aria-live="polite">${navigator.onLine ? "Đã lưu trên thiết bị" : "Ngoại tuyến · Sẽ đồng bộ khi có mạng"}</p>`}
+    ${syncRunning || sheetSyncRunning ? `<div class="sync-loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><div class="sync-loading-copy"><strong>Đang đồng bộ đơn hàng</strong><span class="sync-loading-skeleton" aria-hidden="true"><i></i><i></i><i></i></span></div></div>` : `<p class="sync-state" aria-live="polite">${navigator.onLine ? "Đã lưu trên thiết bị" : "Ngoại tuyến · Chờ bạn đồng bộ khi có mạng"}</p>`}
     ${activeSession() && role === "shipper" ? `<div class="divider"></div><button class="button full" data-action="open-session">Tiếp tục phiên giao hàng ${icon("chevron", 18)}</button>` : ""}
   </main>`;
 }
@@ -769,21 +759,18 @@ async function updateState(next, message) {
   recordClientLog("info", "app:update", "Đã lưu thay đổi trên thiết bị");
   render();
   if (message) flash(`${message} · Đã lưu trên thiết bị`);
-  void syncQueued();
 }
 
 async function syncQueued() {
   if (!user || !navigator.onLine || syncRunning) return;
   syncRunning = true;
+  render();
   let hasOperations = false;
-  let needsRender = false;
-  const initialModal = modal;
   try {
     for (let attempt = 0; attempt < 4; attempt++) {
       const batch = await nextOutboxBatch(user.id, 40);
       if (!batch.length) break;
       hasOperations = true;
-      if (!needsRender) { needsRender = true; render(); }
       const operations = batch.map(item => ({ operationId: item.id, type: item.type, entityId: item.entityId, baseRevision: item.baseRevision, payload: item.payload }));
       try {
         const result = await apiRequest("/api/operations", { method: "POST", body: { operations } });
@@ -814,52 +801,43 @@ async function syncQueued() {
       lastPersistedState = cloneState(state);
       syncErrorShown = false;
     }
-    if (modal !== initialModal) needsRender = true;
   } catch (error) {
     if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
-    needsRender = true;
   } finally {
     syncRunning = false;
-    if (needsRender) render();
-    void syncQueuedAppLog();
+    render();
   }
 }
 
 async function syncQueuedAppLog() {
   if (!user || !navigator.onLine || syncRunning || appLogRunning) return;
   const ownerId = user.id;
+  appLogRunning = true;
   try {
     const operations = await getOutbox(ownerId);
     if (operations.some(item => !["conflict", "done"].includes(item.status))) return;
     if ((await getPendingPhotos()).length || (await getMeta(`media-deletes:${ownerId}`) || []).length) return;
-    const lastSent = Number(await getMeta(`lastAppLogSentAt:${ownerId}`)) || 0;
-    const wait = 1_100 - (Date.now() - lastSent);
-    if (wait > 0) { scheduleAppLogSync(wait); return; }
-    const item = await nextAppLog(ownerId);
-    if (!item) {
-      if (await hasPendingAppLogs(ownerId)) scheduleAppLogSync(60_000);
-      return;
+    let lastSent = Number(await getMeta(`lastAppLogSentAt:${ownerId}`)) || 0;
+    for (let sent = 0; sent < 10; sent++) {
+      if (syncRunning || sheetSyncRunning) return;
+      const wait = 1_100 - (Date.now() - lastSent);
+      if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+      const item = await nextAppLog(ownerId);
+      if (!item) return;
+      try {
+        await sendApiRequest("/api/log", {
+          method: "POST",
+          body: { type: item.type, api: item.api, description: item.description, details: item.details }
+        });
+        lastSent = Date.now();
+        await setMeta(`lastAppLogSentAt:${ownerId}`, lastSent);
+        await ackAppLog(item.id);
+      } catch {
+        await failAppLog(item.id);
+        return;
+      }
     }
-    appLogRunning = true;
-    try {
-      await sendApiRequest("/api/log", {
-        method: "POST",
-        body: { type: item.type, api: item.api, description: item.description, details: item.details }
-      });
-      const sentAt = Date.now();
-      await setMeta(`lastAppLogSentAt:${ownerId}`, sentAt);
-      lastAppLogSentAt = sentAt;
-      await ackAppLog(item.id);
-    } catch {
-      scheduleAppLogSync(await failAppLog(item.id));
-      return;
-    } finally {
-      appLogRunning = false;
-    }
-    if (await hasPendingAppLogs(ownerId)) scheduleAppLogSync(Math.max(0, 1_100 - (Date.now() - lastAppLogSentAt)));
-  } catch {
-    scheduleAppLogSync(12_000);
-  }
+  } catch {} finally { appLogRunning = false; }
 }
 
 async function syncPendingPhotos() {
@@ -958,16 +936,12 @@ async function syncOrderDetail(orderId) {
   render();
 }
 
-function startBackgroundSync() {
-  clearInterval(syncTimer);
+function startNetworkMonitor() {
+  clearInterval(networkProbeTimer);
   if (!user) return;
-  void syncQueued();
   void probeNetwork();
-  syncTimer = setInterval(() => {
-    if (document.visibilityState === "visible") {
-      void syncQueued();
-      void probeNetwork();
-    }
+  networkProbeTimer = setInterval(() => {
+    if (document.visibilityState === "visible") void probeNetwork();
   }, 12_000);
 }
 
@@ -986,6 +960,7 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
   role = nextUser.role;
   recordClientLog("info", "app:session", "Đã mở phiên ứng dụng");
   accounts[user.id] = { id: user.id, name: user.name, role: user.role };
+  const shouldRunFirstSync = await claimFirstInstallSync();
   await setMeta("lastUser", user.id);
   state = normalizeState(await readState(emptyState(), user.id));
   lastPersistedState = cloneState(state);
@@ -994,8 +969,8 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
     ? savedStack : [{ name: "home" }];
   lastSyncAt = await getMeta(`lastSync:${user.id}`) || null;
   render();
-  startBackgroundSync();
-  if (refresh && navigator.onLine && !lastSyncAt) {
+  startNetworkMonitor();
+  if (refresh && shouldRunFirstSync && navigator.onLine) {
     try { await pullRemoteOrders({ sheet: true }); }
     catch (error) { showError(error.message); }
   }
@@ -1010,7 +985,7 @@ async function restoreOfflineUser(userId) {
 }
 
 async function logout() {
-  clearInterval(syncTimer);
+  clearInterval(networkProbeTimer);
   try { await apiRequest("/api/auth/logout", { method: "POST", body: {} }); } catch { /* local logout must work offline */ }
   await setMeta("lastUser", null);
   role = null;
@@ -1235,7 +1210,6 @@ async function deletePhoto(id) {
   if (photo.remoteId) {
     const key = `media-deletes:${user.id}`;
     await setMeta(key, [...new Set([...(await getMeta(key) || []), photo.remoteId])]);
-    void syncPendingMediaDeletes();
   }
 }
 
@@ -1324,7 +1298,6 @@ async function savePhotoFiles(orderId, files) {
     await hydratePhotos(orderId);
     if (validFiles.length > allowedCount) flash("Chỉ 5 ảnh được lưu cho mỗi đơn.");
     else if (saved) flash(`${saved} ảnh đã lưu trên thiết bị.`);
-    if (saved && navigator.onLine) void syncPendingPhotos();
   } catch { flash("Không lưu được ảnh trên thiết bị này."); }
 }
 
@@ -1390,15 +1363,15 @@ app.addEventListener("click", async event => {
   if (action === "back") { back(); return; }
   if (action === "logout") { await logout(); return; }
   if (action === "refresh") {
-    if (sheetSyncRunning || orderSyncRunningId) return;
+    if (syncRunning || sheetSyncRunning || orderSyncRunningId) return;
     if (!setButtonBusy(button, true)) return;
-    try { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); flash("Đã làm mới dữ liệu đơn hàng."); }
+    try { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đã làm mới dữ liệu đơn hàng."); }
     catch (error) { showError(error.message); }
     finally { setButtonBusy(button, false); }
     return;
   }
   if (action === "refresh-order") {
-    if (sheetSyncRunning || orderSyncRunningId) return;
+    if (syncRunning || sheetSyncRunning || orderSyncRunningId) return;
     orderSyncRunningId = id;
     render();
     try { await syncOrderDetail(id); flash(`Đã đồng bộ đơn ${id}.`); }
@@ -1407,13 +1380,13 @@ app.addEventListener("click", async event => {
     return;
   }
   if (action === "retry-sync") {
-    if (sheetSyncRunning || orderSyncRunningId) return;
+    if (syncRunning || sheetSyncRunning || orderSyncRunningId) return;
     const detailOrderId = currentView()?.name === "order" ? currentView().orderId : null;
     if (detailOrderId) orderSyncRunningId = detailOrderId;
     modal = null; render();
     try {
       if (detailOrderId) { await syncOrderDetail(detailOrderId); flash(`Đã đồng bộ đơn ${detailOrderId}.`); }
-      else { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); flash("Đồng bộ đã hoàn tất."); }
+      else { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đồng bộ đã hoàn tất."); }
     } catch (error) { if (error.status === 401) void logout(); else showError(error.message); }
     finally { if (detailOrderId) { orderSyncRunningId = null; render(); } }
     return;
