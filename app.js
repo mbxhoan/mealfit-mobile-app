@@ -4,6 +4,7 @@ import {
   cancelSession,
   classifyNetworkSignal,
   createSession,
+  deleteSession,
   dueAmount,
   getSessionStats,
   isEdgeBackSwipe,
@@ -33,7 +34,12 @@ import {
   nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, writeStateSnapshot
 } from "./local-store.mjs";
 
-const accounts = { admin: "Admin", user: "Nhân viên", hieu: "Hiếu", hoan: "Hoàn", shipper: "Shipper" };
+const defaultAccounts = [
+  { id: "admin", name: "Admin", role: "admin" }, { id: "user", name: "Nhân viên", role: "user" },
+  { id: "hieu", name: "Hiếu", role: "shipper" }, { id: "hoan", name: "Hoàn", role: "shipper" },
+  { id: "shipper", name: "Shipper", role: "shipper" }
+];
+let accounts = Object.fromEntries(defaultAccounts.map(account => [account.id, account]));
 const emptyState = () => ({ orders: [], sessions: [], activeSessionId: null });
 
 let state = emptyState();
@@ -199,7 +205,7 @@ function loginScreen() {
   return `<main class="login-page">
     <header class="login-topbar"><span aria-hidden="true"></span><img src="/logo-transparent.png" alt="Mealfit"/>${networkIndicator()}</header>
     <form class="login-form" id="login-form">
-      <div class="form-field"><label for="username">Tài khoản</label><select class="select" id="username" name="username" autocomplete="username" required><option value="">Chọn tài khoản</option>${Object.entries(accounts).map(([id, name]) => `<option value="${id}">${name}</option>`).join("")}</select></div>
+      <div class="form-field"><label for="username">Tài khoản</label><select class="select" id="username" name="username" autocomplete="username" required><option value="">Chọn tài khoản</option>${Object.values(accounts).map(account => `<option value="${safe(account.id)}">${safe(account.name)}</option>`).join("")}</select></div>
       <div class="form-field"><label for="pin">Mã PIN</label><input class="input pin-input" id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,6}" minlength="4" maxlength="6" placeholder="Nhập PIN" autocomplete="current-password" required /></div>
       <p class="login-error" id="login-error" aria-live="polite"></p>
       <button class="button full" type="submit">Đăng nhập ${icon("chevron", 18)}</button>
@@ -220,7 +226,10 @@ function homeScreen() {
   const menu = [
     { title: "Đơn hàng", count: `${counts.pending + counts.transit + counts.delivered} đơn`, icon: "orders", action: "orders" },
     { title: role === "shipper" ? "Giao hàng" : "Phiên giao hàng", count: role === "shipper" ? (activeSession() ? "Tiếp tục phiên" : "Tạo phiên") : "Theo dõi tuyến", icon: "delivery", action: role === "shipper" ? "delivery" : "session-overview" },
-    ...(role === "admin" ? [{ title: "Hoạt động", count: "API · ứng dụng", icon: "activity", action: "activity" }] : [])
+    ...(role === "admin" ? [
+      { title: "Hoạt động", count: "API · ứng dụng", icon: "activity", action: "activity" },
+      { title: "Tài khoản", count: "User · shipper", icon: "user", action: "accounts" }
+    ] : [])
   ];
   return `<main class="page">
     <p class="home-date">${lastSyncAt ? `Đồng bộ ${timeLabel(lastSyncAt)}` : "Đơn hàng sẽ tải khi có kết nối"}</p>
@@ -248,7 +257,7 @@ function activityScreen() {
       const detail = item.detail || {};
       const isApi = item.entityType === "api";
       const status = Number(detail.status) || Number(item.operation.match(/\s(\d{3})$/)?.[1]) || 0;
-      const actor = accounts[item.actorId] || item.actorId || "Hệ thống";
+      const actor = accounts[item.actorId]?.name || item.actorId || "Hệ thống";
       return `<article class="list-card activity-card">
         <div class="card-top"><strong>${safe(item.entityId)}</strong><span class="activity-status ${status >= 400 || detail.errorCode ? "failed" : "ok"}">${safe(item.operation)}</span></div>
         <p class="activity-meta">${safe(actor)} · ${safe(dateLabel(item.createdAt))} ${safe(timeLabel(item.createdAt))}${detail.durationMs != null ? ` · ${Math.max(0, Number(detail.durationMs))} ms` : ""}</p>
@@ -261,6 +270,17 @@ function activityScreen() {
     ${activityLoading ? `<div class="empty-state"><span class="spinner" aria-label="Đang tải"></span></div>` : !activityRows.length && !activityError ? `<div class="empty-state">Chưa có lịch sử ${activityKind === "api" ? "API" : "hoạt động"}.</div>` : ""}
     ${activityHasMore ? `<button class="button secondary full" data-action="load-more-activity" ${activityLoading ? "disabled" : ""}>${activityLoading ? "Đang tải…" : "Tải thêm"}</button>` : ""}
   </main>`;
+}
+
+function accountsScreen() {
+  if (role !== "admin") return `<main class="page"><div class="empty-state">Chỉ admin được quản lý tài khoản.</div></main>`;
+  const roleNames = { admin: "Admin", user: "Nhân viên", shipper: "Shipper" };
+  return `<main class="page"><form id="accounts-form">
+    <p class="field-help">Đổi tên không thay đổi ID đăng nhập. Tên shipper cũ vẫn được dùng để đồng bộ các đơn đã ghi trên Sheet. Shipper mới dùng PIN chung hiện tại.</p>
+    <div class="account-list">${Object.values(accounts).map(account => `<label class="account-edit-row"><span><strong>${safe(roleNames[account.role] || account.role)}</strong><small>${safe(account.id)}</small></span><input class="input" name="name-${safe(account.id)}" data-account-id="${safe(account.id)}" data-account-base-name="${safe(account.name)}" value="${safe(account.name)}" maxlength="80" required aria-label="Tên ${safe(account.id)}" /></label>`).join("")}</div>
+    <label class="form-field"><span class="account-new-label">Thêm shipper mới</span><input class="input" name="newShipperName" maxlength="80" placeholder="Tên shipper" autocomplete="off" /></label>
+    <button class="button full" type="submit">Lưu tài khoản</button>
+  </form></main>`;
 }
 
 async function loadActivity(reset = false) {
@@ -445,6 +465,8 @@ function sessionScreen() {
     </main>`;
   }
   const editable = role === "shipper" && ["notStarted", "active"].includes(session.status);
+  const canDeleteSession = role === "admin" || (role === "shipper" && (!session.ownerId || session.ownerId === user?.id));
+  const deleteSessionButton = canDeleteSession ? `<button class="button danger full" style="margin-top:12px" data-action="delete-session" data-id="${safe(session.id)}">Xóa phiên</button>` : "";
   const delivering = role === "shipper" && session.status === "active";
   const orders = session.orderIds.map(orderById).filter(Boolean);
   const isDone = order => Boolean(order && session.legs[order.id]?.completedAt);
@@ -502,7 +524,7 @@ function sessionScreen() {
   return `<main class="page route-page"><div class="session-meta"><span>${safe(session.id)} · ${dateLabel(session.startedAt || session.createdAt)}</span>${sessionBadge(session.status)}</div>
     <div class="route-progress"><strong>${completed} / ${orders.length} điểm</strong><div class="shift-summary-list">${stats.shifts.map(item => `<span class="shift-summary ${item.done ? "done" : ""}">${item.done ? icon("check", 13) : ""}${item.shift} ${item.completed}/${item.total}</span>`).join("")}${unassigned ? `<span class="shift-summary">Chưa phân ca ${unassigned}</span>` : ""}</div></div>
     <div class="route-stats">${session.startedAt ? `<div><span>Tiền mặt</span><strong>${money(stats.cashCollected)}</strong></div><div><span>Chuyển khoản</span><strong>${money(stats.transferCollected)}</strong></div><div><span>Còn giao</span><strong>${stats.remainingCount}</strong></div><div><span>Tổng tuyến</span><strong>${money(stats.totalValue)}</strong></div>` : `<div><span>Tổng cần thu</span><strong>${money(stats.amountToCollect)}</strong></div><div><span>Tổng tuyến</span><strong>${money(stats.totalValue)}</strong></div>`}</div>
-    ${continueButton}${controls}
+    ${continueButton}${controls}${deleteSessionButton}
     <div class="route-tabs"><button class="route-tab ${sessionTab === "route" ? "active" : ""}" data-action="session-tab" data-tab="route">Tuyến</button><button class="route-tab ${sessionTab === "orders" ? "active" : ""}" data-action="session-tab" data-tab="orders">Đơn trong phiên</button></div>
     <div class="sr-only" role="status" aria-live="polite">${safe(routeAnnouncement)}</div>
     ${sessionTab === "route" ? `<div class="route-list">${renderOrderGroups(stopCard, "route") || '<div class="empty-state">Phiên này chưa có điểm giao.</div>'}</div>` : `<div class="session-order-list">${renderOrderGroups(orderListCard, "session-order")}</div>`}
@@ -561,6 +583,12 @@ function renderModal() {
     const remaining = session?.orderIds.filter(id => !session.legs[id]?.completedAt).length || 0;
     return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Hủy lộ trình?</h2><p>${remaining} đơn chưa giao sẽ trở về danh sách chờ. Các đơn đã giao được giữ nguyên.</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Quay lại</button><button class="button danger" data-action="confirm-cancel-session">Hủy lộ trình</button></div></section></div>`;
   }
+  if (modal.type === "delete-session") {
+    const session = state.sessions.find(item => item.id === modal.sessionId);
+    if (!session) return "";
+    const resetCount = session.orderIds.filter(id => orderById(id)?.deliveryStatus === "Đang giao hàng").length;
+    return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Xóa phiên giao hàng?</h2><p>${resetCount} đơn đang giao sẽ chuyển về “Chưa giao hàng”. Trạng thái các đơn còn lại được giữ nguyên.</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Quay lại</button><button class="button danger" data-action="confirm-delete-session" data-id="${safe(session.id)}">Xóa phiên</button></div></section></div>`;
+  }
   if (modal.type === "reopen-order") {
     const order = orderById(modal.orderId);
     if (!order) return "";
@@ -585,6 +613,7 @@ function render() {
     case "home": content = homeScreen(); options.back = false; break;
     case "orders": content = ordersScreen(); options.title = "Đơn hàng"; break;
     case "activity": content = activityScreen(); options.title = "Hoạt động"; break;
+    case "accounts": content = accountsScreen(); options.title = "Tài khoản"; break;
     case "dishes": content = dishesScreen(); options.title = "Món"; break;
     case "delivery": content = singleDeliveryScreen(); options.title = "Giao lẻ"; break;
     case "sessions-overview": content = staffSessionsScreen(); options.title = "Phiên giao hàng"; break;
@@ -789,6 +818,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   if (sheet && sheetSyncRunning) return;
   if (sheet) { sheetSyncRunning = true; render(); }
   try {
+    try { await refreshAccounts(); } catch { /* order sync can use the authenticated account already loaded */ }
     if (sheet) await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 120_000 });
     let cursor = null;
     let first = true;
@@ -859,11 +889,20 @@ function startBackgroundSync() {
   }, 12_000);
 }
 
-const validViewNames = new Set(["home", "orders", "sessions-overview", "session-create", "session", "add-orders", "order"]);
+const validViewNames = new Set(["home", "orders", "sessions-overview", "session-create", "session", "add-orders", "order", "accounts"]);
+
+async function refreshAccounts() {
+  const result = await apiRequest("/api/auth?action=accounts");
+  if (!Array.isArray(result.data) || !result.data.length) throw new Error("Danh sách tài khoản không hợp lệ.");
+  accounts = Object.fromEntries(result.data.map(account => [account.id, account]));
+  await setMeta("accountDirectory", result.data);
+  if (user && accounts[user.id]) user = { ...user, ...accounts[user.id] };
+}
 
 async function activateUser(nextUser, { restoreView = true, refresh = true } = {}) {
   user = nextUser;
   role = nextUser.role;
+  accounts[user.id] = { id: user.id, name: user.name, role: user.role };
   await setMeta("lastUser", user.id);
   state = normalizeState(await readState(emptyState(), user.id));
   lastPersistedState = cloneState(state);
@@ -881,9 +920,8 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
 
 async function restoreOfflineUser(userId) {
   const account = accounts[userId];
-  const roleName = userId === "admin" || userId === "user" ? userId : "shipper";
   if (!account) return false;
-  await activateUser({ id: userId, name: account, role: roleName }, { refresh: false });
+  await activateUser(account, { refresh: false });
   flash("Đang dùng dữ liệu đã lưu trên thiết bị · Ngoại tuyến");
   return true;
 }
@@ -902,8 +940,11 @@ async function logout() {
 async function initializeApp() {
   try {
     await openLocalDb();
+    const cachedAccounts = await getMeta("accountDirectory");
+    if (Array.isArray(cachedAccounts) && cachedAccounts.length) accounts = Object.fromEntries(cachedAccounts.map(account => [account.id, account]));
     const cachedUserId = await getMeta("lastUser");
     if (navigator.onLine) {
+      try { await refreshAccounts(); } catch { /* retain the cached login directory while offline or during an API outage */ }
       try {
         const result = await apiRequest("/api/auth/session");
         if (result.user) { await activateUser(result.user); return; }
@@ -1324,6 +1365,10 @@ app.addEventListener("click", async event => {
     if (role !== "admin") { flash("Chỉ admin được xem lịch sử hệ thống."); return; }
     activityKind = "api"; navigate({ name: "activity" }); void loadActivity(true); return;
   }
+  if (action === "open-accounts") {
+    if (role !== "admin") { flash("Chỉ admin được quản lý tài khoản."); return; }
+    navigate({ name: "accounts" }); return;
+  }
   if (action === "activity-kind") { activityKind = button.dataset.kind === "activity" ? "activity" : "api"; void loadActivity(true); return; }
   if (action === "load-more-activity") { void loadActivity(false); return; }
   if (action === "reload-activity") { void loadActivity(true); return; }
@@ -1436,6 +1481,22 @@ app.addEventListener("click", async event => {
   if (action === "cancel-session") {
     if (role !== "shipper" || !activeSession()) { flash("Chỉ shipper có thể hủy phiên đang mở."); return; }
     modal = { type: "cancel-session" }; render(); return;
+  }
+  if (action === "delete-session") {
+    const session = state.sessions.find(item => item.id === id);
+    const allowed = role === "admin" || (role === "shipper" && (!session?.ownerId || session.ownerId === user?.id));
+    if (!session || !allowed) { flash("Tài khoản này không có quyền xóa phiên."); return; }
+    modal = { type: "delete-session", sessionId: id }; render(); return;
+  }
+  if (action === "confirm-delete-session") {
+    const sessionId = modal?.sessionId;
+    if (!sessionId || (role !== "admin" && role !== "shipper")) { modal = null; render(); flash("Tài khoản này không có quyền xóa phiên."); return; }
+    try {
+      const next = deleteSession(state, sessionId);
+      modal = null;
+      await updateState(next, "Đã xóa phiên lộ trình.");
+    } catch (error) { modal = null; render(); flash(error.message); }
+    return;
   }
   if (action === "confirm-cancel-session") {
     if (role !== "shipper") { modal = null; render(); flash("Chỉ shipper có thể hủy phiên."); return; }
@@ -1642,7 +1703,7 @@ app.addEventListener("submit", async event => {
     const username = data.get("username");
     const pin = String(data.get("pin") || "");
     const submit = event.target.querySelector('[type="submit"]');
-    if (!Object.hasOwn(accounts, username) || !/^\d{4,6}$/.test(pin)) {
+    if (!accounts[username] || !/^\d{4,6}$/.test(pin)) {
       document.querySelector("#login-error").textContent = "Tài khoản hoặc PIN chưa đúng.";
       return;
     }
@@ -1662,6 +1723,22 @@ app.addEventListener("submit", async event => {
     } finally {
       if (submit?.isConnected) setButtonBusy(submit, false);
     }
+  } else if (event.target.id === "accounts-form") {
+    if (role !== "admin") { flash("Chỉ admin được quản lý tài khoản."); return; }
+    const form = event.target;
+    const submit = form.querySelector('[type="submit"]');
+    const data = new FormData(form);
+    const updates = [...form.querySelectorAll("[data-account-id]")].map(input => ({ id: input.dataset.accountId, baseName: input.dataset.accountBaseName, name: input.value }));
+    if (!setButtonBusy(submit, true)) return;
+    try {
+      const result = await apiRequest("/api/auth?action=accounts", { method: "POST", body: { accounts: updates, newShipperName: data.get("newShipperName") } });
+      accounts = Object.fromEntries((result.data || []).map(account => [account.id, account]));
+      await setMeta("accountDirectory", result.data || []);
+      user = accounts[user.id] || user;
+      render();
+      flash("Đã lưu danh sách tài khoản.");
+    } catch (error) { showError(error.message); }
+    finally { if (submit?.isConnected) setButtonBusy(submit, false); }
   }
 });
 

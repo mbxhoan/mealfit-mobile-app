@@ -6,7 +6,7 @@ import { fetchSheetOrders } from "../server-lib/n8n.mjs";
 export default handler(async (req, res) => {
   requireMethod(req, "GET");
   assertSameOrigin(req);
-  const user = requireUser(req);
+  const user = await requireUser(req);
   const url = new URL(req.url, `https://${req.headers.host || "mealfit.local"}`);
   if (url.searchParams.get("view") === "logs") {
     if (user.role !== "admin") throw new AppError(403, "ADMIN_REQUIRED", "Chỉ admin được xem lịch sử hệ thống.");
@@ -36,7 +36,7 @@ export default handler(async (req, res) => {
     getSql()`SELECT 1`
       .then(() => ({ ok: true, durationMs: Date.now() - databaseStartedAt }))
       .catch(error => ({ ok: false, durationMs: Date.now() - databaseStartedAt, message: "Không kết nối được cơ sở dữ liệu.", errorCode: error?.code || error?.sourceError?.cause?.code || "DATABASE_UNAVAILABLE" })),
-    fetchSheetOrders({ limit: 1 })
+    fetchSheetOrders({ limit: 1, shipper: user.role === "shipper" ? user.name : "" })
       .then(result => ({ ok: true, status: 200, durationMs: Date.now() - apiStartedAt, sampleCount: result.rows.length }))
       .catch(error => ({ ok: false, status: error.upstreamStatus || null, code: error.code || "UPSTREAM_ERROR", durationMs: Date.now() - apiStartedAt, message: error.message }))
   ]);

@@ -5,7 +5,7 @@ import { orderFromRow } from "../server-lib/sync.mjs";
 
 export default handler(async (req, res) => {
   requireMethod(req, "GET");
-  const user = requireUser(req);
+  const user = await requireUser(req);
   const url = new URL(req.url, `https://${req.headers.host || "mealfit.local"}`);
   const cursor = Math.max(0, Number(url.searchParams.get("cursor")) || 0);
   const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 50));

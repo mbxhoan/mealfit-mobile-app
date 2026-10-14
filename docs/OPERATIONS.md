@@ -4,7 +4,7 @@ Local: `npm run dev` chạy Vite; để chạy Vercel Functions bằng `npm run 
 
 ## Database và môi trường
 
-Tạo database Postgres riêng cho app rồi chạy `db/migrations/001_initial.sql`. Đặt các biến sau ở Vercel và local:
+Tạo database Postgres riêng cho app rồi chạy lần lượt `db/migrations/001_initial.sql` và `db/migrations/002_account_directory.sql`. Chạy migration mới sau khi deploy bản có danh bạ tài khoản trước khi mở app. Đặt các biến sau ở Vercel và local:
 
 | Biến | Giá trị / mục đích |
 | --- | --- |

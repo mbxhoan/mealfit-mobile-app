@@ -135,6 +135,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .activity-meta { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .activity-error { margin: 6px 0 0; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .activity-trace { display: block; margin-top: 6px; color: #92959a; font-size: 10px; overflow-wrap: anywhere; }
+.account-list { display: grid; gap: 9px; margin: 18px 0; }
+.account-edit-row { display: grid; grid-template-columns: minmax(76px, .75fr) minmax(0, 1.25fr); align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 13px; background: #fff; }
+.account-edit-row > span { min-width: 0; display: grid; gap: 4px; }
+.account-edit-row strong, .account-new-label { font-size: 13px; font-weight: 700; }
+.account-edit-row small { overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
+.account-edit-row .input { min-height: 44px; padding: 0 10px; font-size: 16px; }
 .card-top, .card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .order-number { font-size: 13px; font-weight: 750; }
 .order-customer { margin: 8px 0 3px; font-size: 15px; font-weight: 700; }

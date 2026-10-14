@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { AppError, requireEnv, setApiActor } from "./core.mjs";
 import { getSql } from "./db.mjs";
+import { getAccount } from "./accounts.mjs";
 
 if (process.env.VERCEL_ENV !== "production") {
   try { process.loadEnvFile(new URL("../../.env.local", import.meta.url)); }
@@ -8,13 +9,6 @@ if (process.env.VERCEL_ENV !== "production") {
 }
 
 const COOKIE = "mealfit_session";
-export const ACCOUNTS = {
-  admin: { id: "admin", name: "Admin", role: "admin" },
-  user: { id: "user", name: "Nhân viên", role: "user" },
-  hieu: { id: "hieu", name: "Hiếu", role: "shipper" },
-  hoan: { id: "hoan", name: "Hoàn", role: "shipper" },
-  shipper: { id: "shipper", name: "Shipper", role: "shipper" }
-};
 
 const signature = payload => createHmac("sha256", requireEnv("SESSION_SECRET", "Phiên đăng nhập chưa được cấu hình.")).update(payload).digest("base64url");
 
@@ -34,21 +28,21 @@ export function expiredCookie() {
   return `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure}`;
 }
 
-export function getSessionUser(req) {
+export async function getSessionUser(req) {
   const value = cookieValue(req);
   const parts = value.split(".");
   if (parts.length !== 4) return null;
   const payload = parts.slice(0, 3).join(".");
   const [id, expires] = parts;
-  if (!ACCOUNTS[id] || Number(expires) <= Date.now() / 1000) return null;
+  if (!id || Number(expires) <= Date.now() / 1000) return null;
   const actual = Buffer.from(parts[3]);
   const expected = Buffer.from(signature(payload));
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
-  return ACCOUNTS[id];
+  return getAccount(id);
 }
 
-export function requireUser(req) {
-  const user = getSessionUser(req);
+export async function requireUser(req) {
+  const user = await getSessionUser(req);
   if (!user) throw new AppError(401, "AUTH_REQUIRED", "Đăng nhập lại khi có kết nối mạng.");
   req.mealfitUser = user;
   setApiActor(user.id);

@@ -50,14 +50,38 @@ export function sheetId() {
   return requireEnv("N8N_SHEET_ID", "Chưa chọn Google Sheet cho môi trường này.");
 }
 
-export async function fetchSheetOrders({ cursor = "", limit = 100, modifiedSince = "" } = {}) {
+export async function fetchSheetOrders({ cursor = "", limit = 100, modifiedSince = "", shipper = "" } = {}) {
   const params = new URLSearchParams({ sheet_id: sheetId(), limit: String(Math.max(1, Math.min(500, limit))) });
   if (cursor) params.set("cursor", cursor);
   if (modifiedSince) params.set("since", modifiedSince);
+  if (shipper.trim()) params.set("shipper", shipper.trim());
   const response = await n8nRequest(`shipping-orders?${params}`);
   if (Array.isArray(response)) return { rows: response, nextCursor: null };
   if (Array.isArray(response?.data)) return { rows: response.data, nextCursor: response.nextCursor || null };
   throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Webhook danh sách đơn không trả về mảng data.");
+}
+
+export async function fetchSheetOrdersForShippers({ shippers = [""], limit = 500, modifiedSince = "" } = {}) {
+  const rows = new Map();
+  let received = 0;
+  let pages = 0;
+  for (const shipper of shippers.length ? shippers : [""]) {
+    let cursor = "";
+    let complete = false;
+    for (let page = 0; page < 100; page++) {
+      pages++;
+      const result = await fetchSheetOrders({ cursor, limit, modifiedSince, shipper });
+      received += result.rows.length;
+      for (const row of result.rows) {
+        const code = String(row?.["Mã đơn"] || row?.code || "").trim();
+        if (code && !rows.has(code)) rows.set(code, row);
+      }
+      if (!result.nextCursor) { complete = true; break; }
+      cursor = result.nextCursor;
+    }
+    if (!complete) throw new AppError(413, "SHEET_PAGE_LIMIT", "Có quá nhiều đơn thay đổi trong một lần đồng bộ. Vui lòng thử lại.");
+  }
+  return { rows: [...rows.values()], received, pages };
 }
 
 export async function fetchSheetOrder(code) {

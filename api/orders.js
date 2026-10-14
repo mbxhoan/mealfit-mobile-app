@@ -16,7 +16,7 @@ function cursorFrom(value) {
 
 export default handler(async (req, res) => {
   requireMethod(req, "GET");
-  const user = requireUser(req);
+  const user = await requireUser(req);
   const url = new URL(req.url, `https://${req.headers.host || "mealfit.local"}`);
   const code = String(req.query?.code || url.searchParams.get("code") || "");
   if (code) {

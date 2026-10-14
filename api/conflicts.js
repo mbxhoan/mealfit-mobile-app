@@ -6,7 +6,7 @@ import { normalizeSheetOrder, validateOrderMutation } from "../server-lib/orders
 import { queueUpstream } from "../server-lib/upstream.mjs";
 
 export default handler(async (req, res) => {
-  const user = requireUser(req);
+  const user = await requireUser(req);
   if (user.role !== "admin") throw new AppError(403, "ADMIN_ONLY", "Chỉ Admin có thể xử lý xung đột.");
   if (req.method === "GET") {
     const rows = await getSql()`SELECT conflict_id AS id, order_code AS code, app_revision AS "appRevision", sheet_revision AS "sheetRevision", app_payload AS "appPayload", sheet_payload AS "sheetPayload", created_at AS "createdAt" FROM mealfit_conflicts WHERE status = 'open' ORDER BY created_at DESC LIMIT 100`;

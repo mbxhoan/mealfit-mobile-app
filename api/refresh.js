@@ -3,11 +3,11 @@ import { put } from "@vercel/blob";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { getSql } from "../server-lib/db.mjs";
-import { fetchSheetOrders } from "../server-lib/n8n.mjs";
+import { fetchSheetOrders, fetchSheetOrdersForShippers } from "../server-lib/n8n.mjs";
 import { importSheetOrders, markSheetPull } from "../server-lib/sync.mjs";
 import { flushUpstream } from "../server-lib/upstream.mjs";
 
-const TABLES = ["mealfit_orders", "mealfit_sessions", "mealfit_operations", "mealfit_payment_events", "mealfit_upstream_outbox", "mealfit_media", "mealfit_conflicts", "mealfit_audit_log", "mealfit_auth_attempts", "mealfit_sync_meta"];
+const TABLES = ["mealfit_accounts", "mealfit_orders", "mealfit_sessions", "mealfit_operations", "mealfit_payment_events", "mealfit_upstream_outbox", "mealfit_media", "mealfit_conflicts", "mealfit_audit_log", "mealfit_auth_attempts", "mealfit_sync_meta"];
 
 async function runMaintenance(req, res) {
   requireMethod(req, "GET", "POST");
@@ -46,10 +46,11 @@ export default handler(async (req, res) => {
   }
   requireMethod(req, "POST");
   assertSameOrigin(req);
-  requireUser(req);
+  const user = await requireUser(req);
   const body = await readJson(req);
   const sql = getSql();
-  const meta = await sql`SELECT updated_at FROM mealfit_sync_meta WHERE key = 'last-sheet-pull' LIMIT 1`;
+  const syncKey = user.role === "shipper" ? `last-sheet-pull:${user.id}` : "last-sheet-pull";
+  const meta = await sql`SELECT updated_at FROM mealfit_sync_meta WHERE key = ${syncKey} LIMIT 1`;
   const recent = body.force !== true && meta[0] && Date.now() - new Date(meta[0].updated_at).valueOf() < 15_000;
   let count = 0;
   let received = 0;
@@ -58,21 +59,14 @@ export default handler(async (req, res) => {
   if (!recent) {
     try {
       const previousPull = meta[0]?.updated_at ? new Date(new Date(meta[0].updated_at).valueOf() - 120_000).toISOString() : "";
-      let cursor = "";
-      let complete = false;
-      for (let page = 0; page < 100; page++) {
-        pages++;
-        const result = await fetchSheetOrders({ cursor, limit: 500, modifiedSince: previousPull });
-        received += result.rows.length;
-        stage = "postgres-import";
-        count += await importSheetOrders(result.rows);
-        stage = "n8n-fetch";
-        if (!result.nextCursor) { complete = true; break; }
-        cursor = result.nextCursor;
-      }
-      if (!complete) throw new AppError(413, "SHEET_PAGE_LIMIT", "Có quá nhiều đơn thay đổi trong một lần đồng bộ. Vui lòng thử lại.");
+      const shipperNames = user.role === "shipper" ? user.shipperNames : [""];
+      const pull = await fetchSheetOrdersForShippers({ shippers: shipperNames, limit: 500, modifiedSince: previousPull });
+      received = pull.received;
+      pages = pull.pages;
+      stage = "postgres-import";
+      count = await importSheetOrders(pull.rows);
       stage = "sync-checkpoint";
-      await markSheetPull(count);
+      await markSheetPull(count, syncKey);
     } catch (error) {
       req.apiLogDetail = { stage, received, imported: count, pages };
       if (error instanceof AppError) throw error;

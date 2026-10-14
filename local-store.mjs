@@ -91,13 +91,21 @@ export async function commitState(nextState, previousState, userId) {
   const previous = previousState || { orders: [], sessions: [] };
   stateStore.put({ key: stateKey(userId), value: clone(nextState), updatedAt: Date.now() });
   for (const change of entityChanges(previous, nextState)) {
-    if (!change.value) continue;
+    const value = change.value || (change.type === "session" ? {
+      ...change.before,
+      status: "cancelled",
+      pausedAt: null,
+      completedAt: change.before?.completedAt || Date.now(),
+      deleted: true,
+      deletedAt: Date.now()
+    } : null);
+    if (!value) continue;
     const entityKey = keyOf(userId, change.type, change.id);
     const existing = await requestValue(outboxStore.index("entityKey").getAll(entityKey));
     const queued = existing.filter(item => item.status === "queued").sort((a, b) => a.createdAt - b.createdAt).at(-1);
     const baseRevision = Number(change.before?.serverRevision || 0);
     if (queued) {
-      queued.payload = clone(change.value);
+      queued.payload = clone(value);
       queued.updatedAt = Date.now();
       outboxStore.put(queued);
     } else {
@@ -108,7 +116,7 @@ export async function commitState(nextState, previousState, userId) {
         entityId: change.id,
         entityKey,
         baseRevision,
-        payload: clone(change.value),
+        payload: clone(value),
         createdAt: Date.now(),
         status: "queued"
       };
@@ -135,13 +143,16 @@ export async function mergeRemote({ orders = [], sessions = [] }, userId) {
       if (blocked.some(operation => operation.status !== "conflict")) continue;
       if (blocked.length && Number(item.serverRevision || 0) <= Number(current?.serverRevision || 0)) continue;
       if (blocked.length) for (const operation of blocked) outbox.delete(operation.id);
+      if (type === "session" && item.deleted) { items.delete(item.id); continue; }
       if (!current || Number(item.serverRevision || 0) >= Number(current.serverRevision || 0)) items.set(item.id, clone(item));
     }
     state[property] = [...items.values()];
   };
   await merge("order", orders, "orders");
   await merge("session", sessions, "sessions");
-  if (!state.activeSessionId) state.activeSessionId = state.sessions.find(session => ["notStarted", "active", "paused"].includes(session.status))?.id || null;
+  if (!state.sessions.some(session => session.id === state.activeSessionId && ["notStarted", "active", "paused"].includes(session.status))) {
+    state.activeSessionId = state.sessions.find(session => ["notStarted", "active", "paused"].includes(session.status))?.id || null;
+  }
   stateStore.put({ key: stateKey(userId), value: state, updatedAt: Date.now() });
   await complete(tx);
   return clone(state);

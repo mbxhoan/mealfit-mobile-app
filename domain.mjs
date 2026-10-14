@@ -250,6 +250,23 @@ export function cancelSession(state, cancelledAt = Date.now()) {
   };
 }
 
+export function deleteSession(state, sessionId) {
+  const session = state.sessions.find(item => item.id === sessionId);
+  if (!session) throw new Error("Không tìm thấy phiên giao hàng.");
+  const orderIds = new Set(session.orderIds || []);
+  return {
+    ...state,
+    activeSessionId: state.activeSessionId === sessionId ? null : state.activeSessionId,
+    sessions: state.sessions.filter(item => item.id !== sessionId),
+    orders: state.orders.map(order => {
+      if (order.sessionId !== sessionId && !orderIds.has(order.id)) return order;
+      return order.deliveryStatus === "Đang giao hàng"
+        ? { ...order, deliveryStatus: "Chưa giao hàng", deliveryMethod: null, sessionId: null, deliveredAt: null }
+        : { ...order, sessionId: null };
+    })
+  };
+}
+
 export function addOrdersToSession(state, orderIds, shift = null, notesByOrder = {}, mapsLinksByOrder = {}) {
   const session = editableSession(state);
   if (!validShift(shift) || !shift) throw new Error("Chọn ca cho các đơn được thêm.");

@@ -11,6 +11,9 @@ export async function importSheetOrders(rows) {
   const orders = rows.map(row => normalizeSheetOrder(row)).filter(Boolean);
   if (!orders.length) return 0;
   const sql = getSql();
+  const accounts = await sql`SELECT id, name, aliases FROM mealfit_accounts WHERE role = 'shipper'`;
+  const shipperIds = new Map(accounts.flatMap(account => [account.name, ...(account.aliases || [])]
+    .map(name => [String(name).trim().toLocaleLowerCase("vi-VN"), account.id])));
   const records = orders.map(order => ({
     code: order.id,
     raw: order.raw,
@@ -26,7 +29,7 @@ export async function importSheetOrders(rows) {
     payment_status: order.paymentStatus,
     shipping_status: order.deliveryStatus,
     shipper_name: order.shipperName || "Chưa phân công",
-    assigned_user_id: order.assignedUserId,
+    assigned_user_id: shipperIds.get(String(order.shipperName || "").trim().toLocaleLowerCase("vi-VN")) || order.assignedUserId,
     note: order.note,
     items: order.items,
     source_revision: order.sourceRevision
@@ -131,9 +134,9 @@ export async function importSheetOrders(rows) {
   return changedCount;
 }
 
-export async function markSheetPull(imported) {
+export async function markSheetPull(imported, key = "last-sheet-pull") {
   await getSql()`INSERT INTO mealfit_sync_meta (key, value, updated_at)
-    VALUES ('last-sheet-pull', jsonb_build_object('count', ${imported}::integer, 'at', now()), now())
+    VALUES (${key}, jsonb_build_object('count', ${imported}::integer, 'at', now()), now())
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 

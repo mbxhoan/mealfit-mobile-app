@@ -6,6 +6,7 @@ import {
   cancelSession,
   classifyNetworkSignal,
   createSession,
+  deleteSession,
   dueAmount,
   getSessionStats,
   isEdgeBackSwipe,
@@ -220,6 +221,25 @@ test("cancel returns unfinished orders to pending and keeps completed stops", ()
   assert.equal(order(state, "A").deliveryStatus, "Đã giao hàng");
   assert.equal(order(state, "B").deliveryStatus, "Chưa giao hàng");
   assert.equal(getSessionStats(state, session(state).id).remainingCount, 0);
+});
+
+test("deleting a started session removes the route and resets only in-progress orders", () => {
+  let state = startSession(createSession(seed(), ["A", "B", "C"], { A: "Sáng", B: "Chiều", C: "Tối" }, 1000), 2000);
+  state = markPaid(state, "A", "Tiền mặt", 2500);
+  state = markDelivered(state, "A", 3000);
+  state = { ...state, orders: state.orders.map(item => item.id === "C" ? { ...item, deliveryStatus: "Đã huỷ đơn" } : item) };
+  const sessionId = state.activeSessionId;
+  const deleted = deleteSession(state, sessionId);
+
+  assert.equal(deleted.activeSessionId, null);
+  assert.equal(deleted.sessions.some(item => item.id === sessionId), false);
+  assert.equal(order(deleted, "A").deliveryStatus, "Đã giao hàng");
+  assert.equal(order(deleted, "A").paidAmount, 100_000);
+  assert.equal(order(deleted, "B").deliveryStatus, "Chưa giao hàng");
+  assert.equal(order(deleted, "C").deliveryStatus, "Đã huỷ đơn");
+  assert.equal(order(deleted, "A").sessionId, null);
+  assert.equal(order(deleted, "B").sessionId, null);
+  assert.equal(order(deleted, "C").sessionId, null);
 });
 
 test("route stats count session cash and transfer collections, route value and completed shifts", () => {

@@ -4,7 +4,7 @@ import { getSql } from "../server-lib/db.mjs";
 
 export default handler(async (req, res) => {
   requireMethod(req, "GET");
-  const user = requireUser(req);
+  const user = await requireUser(req);
   const rows = user.role === "shipper"
     ? await getSql()`SELECT payload, revision FROM mealfit_sessions WHERE owner_id = ${user.id} ORDER BY updated_at DESC LIMIT 100`
     : await getSql()`SELECT payload, revision FROM mealfit_sessions ORDER BY updated_at DESC LIMIT 500`;

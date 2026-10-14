@@ -9,7 +9,7 @@ import { canReuseClaim } from "../server-lib/orders.mjs";
 export default handler(async (req, res) => {
   requireMethod(req, "POST");
   assertSameOrigin(req);
-  const user = requireUser(req);
+  const user = await requireUser(req);
   if (user.role !== "shipper") throw new AppError(403, "SHIPPER_ONLY", "Chỉ shipper có thể nhận đơn chưa phân công.");
   const body = await readJson(req);
   const codes = [...new Set((Array.isArray(body.codes) ? body.codes : []).map(String))];

@@ -49,7 +49,7 @@ async function uploadToN8n({ mediaId, orderCode, customer, blob, type, filename 
 }
 
 export default handler(async (req, res) => {
-  const user = requireUser(req);
+  const user = await requireUser(req);
   const sql = getSql();
   const url = new URL(req.url, "https://mealfit.local");
   const id = String(req.query?.id || url.searchParams.get("id") || "");

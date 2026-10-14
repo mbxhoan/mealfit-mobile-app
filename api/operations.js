@@ -75,9 +75,11 @@ async function applySession(client, operation, user) {
   const id = String(operation?.operationId || "");
   const sessionId = String(operation?.entityId || operation?.payload?.id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id) || !sessionId.startsWith("PS-")) throw new AppError(400, "INVALID_OPERATION", "Mã phiên hoặc thao tác không hợp lệ.");
-  if (user.role !== "shipper") throw new AppError(403, "SHIPPER_ONLY", "Chỉ shipper có thể cập nhật phiên giao hàng.");
   const payload = operation.payload;
+  const deleting = payload?.deleted === true;
+  if (user.role !== "shipper" && !(deleting && user.role === "admin")) throw new AppError(403, "SHIPPER_ONLY", "Chỉ shipper có thể cập nhật phiên giao hàng.");
   if (!payload || !["notStarted", "active", "paused", "completed", "cancelled"].includes(payload.status) || !Array.isArray(payload.orderIds) || payload.orderIds.length > 500 || new Set(payload.orderIds).size !== payload.orderIds.length) throw new AppError(400, "INVALID_SESSION", "Thông tin phiên giao hàng không hợp lệ.");
+  if (deleting && payload.status !== "cancelled") throw new AppError(400, "INVALID_SESSION", "Phiên đã xóa phải ở trạng thái đã hủy.");
   if (Object.values(payload.shifts || {}).some(shift => !["Sáng", "Chiều", "Tối", ""].includes(shift))) throw new AppError(400, "INVALID_SESSION", "Ca giao hàng không hợp lệ.");
   if (payload.status === "active" && payload.pausedAt) throw new AppError(400, "INVALID_SESSION", "Phiên đang giao không thể còn thời điểm tạm dừng.");
   const bodyHash = hash({ type: "session", sessionId, baseRevision: operation.baseRevision, payload });
@@ -88,20 +90,23 @@ async function applySession(client, operation, user) {
   }
   const found = await client.query("SELECT * FROM mealfit_sessions WHERE session_id = $1 FOR UPDATE", [sessionId]);
   const current = found.rows[0];
-  if (current && current.owner_id !== user.id) throw new AppError(403, "SESSION_FORBIDDEN", "Phiên này thuộc shipper khác.");
+  if (deleting && user.role === "admin" && !current) throw new AppError(404, "SESSION_NOT_FOUND", "Không tìm thấy phiên cần xóa.");
+  if (current && current.owner_id !== user.id && !(deleting && user.role === "admin")) throw new AppError(403, "SESSION_FORBIDDEN", "Phiên này thuộc shipper khác.");
+  const ownerId = current?.owner_id || user.id;
   const currentRevision = Number(current?.revision || 0);
   if (Number(operation.baseRevision || 0) !== currentRevision) return { conflict: true, id, sessionId, revision: currentRevision };
   if (payload.orderIds.length) {
-    const assigned = await client.query("SELECT code FROM mealfit_orders WHERE code = ANY($1::text[]) AND assigned_user_id = $2", [payload.orderIds, user.id]);
+    const assigned = await client.query("SELECT code FROM mealfit_orders WHERE code = ANY($1::text[]) AND assigned_user_id = $2", [payload.orderIds, ownerId]);
     if (assigned.rows.length !== payload.orderIds.length) throw new AppError(403, "SESSION_ORDER_FORBIDDEN", "Phiên chỉ được gồm các đơn đã nhận bởi tài khoản này.");
   }
   const nextRevision = currentRevision + 1;
-  const savedPayload = { ...payload, ownerId: user.id, ownerName: user.name, serverRevision: nextRevision };
+  const ownerName = current?.owner_id === user.id ? user.name : current?.payload?.ownerName || user.name;
+  const savedPayload = { ...payload, ownerId, ownerName, serverRevision: nextRevision };
   await client.query(`INSERT INTO mealfit_sessions (session_id, owner_id, status, payload, revision)
     VALUES ($1, $2, $3, $4::jsonb, $5)
     ON CONFLICT (session_id) DO UPDATE SET status = EXCLUDED.status, payload = EXCLUDED.payload, revision = EXCLUDED.revision, updated_at = now()`,
-    [sessionId, user.id, payload.status, JSON.stringify(savedPayload), nextRevision]);
-  await client.query("INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, operation_id) VALUES ($1, 'session', $2, 'update', $3)", [user.id, sessionId, id]);
+    [sessionId, ownerId, payload.status, JSON.stringify(savedPayload), nextRevision]);
+  await client.query("INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, operation_id) VALUES ($1, 'session', $2, $3, $4)", [user.id, sessionId, deleting ? "delete" : "update", id]);
   const result = { id, sessionId, revision: nextRevision };
   await client.query("INSERT INTO mealfit_operations (operation_id, actor_id, entity_type, entity_id, body_hash, result) VALUES ($1, $2, 'session', $3, $4, $5::jsonb)", [id, user.id, sessionId, bodyHash, JSON.stringify(result)]);
   return result;
@@ -110,7 +115,7 @@ async function applySession(client, operation, user) {
 export default handler(async (req, res) => {
   requireMethod(req, "POST");
   assertSameOrigin(req);
-  const user = requireUser(req);
+  const user = await requireUser(req);
   const body = await readJson(req);
   const operations = Array.isArray(body.operations) ? body.operations : [];
   if (!operations.length || operations.length > 50) throw new AppError(400, "INVALID_BATCH", "Mỗi lần đồng bộ nhận từ 1 đến 50 thao tác.");
