@@ -219,8 +219,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .select-order { display: flex; gap: 12px; align-items: center; width: 100%; text-align: left; cursor: pointer; }
 .select-order.selected { border-color: var(--accent); box-shadow: 0 0 0 2px #f4511e1a; }
 .shift-selection-row { display: grid; gap: 7px; padding: 10px; }
-.shift-selection-row.selected { border-color: #f5b49d; background: linear-gradient(135deg, #fffaf7 0%, #fff0e7 100%); box-shadow: 0 3px 12px #f4511e12; }
+.shift-selection-row.selected { border-color: #f3a17d; background: linear-gradient(135deg, #fff8f3 0%, #ffede3 100%); box-shadow: 0 3px 12px #f4511e18; }
 .shift-selection-row .select-order { align-items: flex-start; padding: 4px; border: 0; background: transparent; }
+.shift-selection-row .select-order.selected { padding: 8px; border: 1px solid #ffd0ba; border-radius: 10px; background: linear-gradient(110deg, #fff4ed 0%, #ffe6d8 100%); }
 .shift-selection-row .checkmark { margin-top: 3px; }
 .orphan-recovery { margin: 0 0 12px; padding: 11px; border: 1px solid #f1d0c3; border-radius: 14px; background: #fff8f4; }
 .orphan-recovery-heading h2 { margin: 0; font-size: 13px; }
