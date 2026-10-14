@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": "24.x"
   },
   "scripts": {
     "dev": "vite",
@@ -22,7 +22,7 @@
     "webcam-easy": "^1.0.6"
   },
   "devDependencies": {
-    "vercel": "^50.41.0",
+    "vercel": "^64.0.2",
     "vite": "^7.1.0"
   }
 }

@@ -2,6 +2,7 @@ import { neon, Pool } from "@neondatabase/serverless";
 import { requireEnv } from "./core.mjs";
 
 function databaseUrl() {
+  if (process.env.VERCEL_ENV === "preview") return requireEnv("MEALFIT_PREVIEW_DATABASE_URL", "Chưa cấu hình database riêng cho Preview.");
   return process.env.DATABASE_URL || (process.env.VERCEL_ENV === "production" ? process.env.POSTGRES_URL : "") || requireEnv("DATABASE_URL", "Cơ sở dữ liệu chưa được cấu hình.");
 }
 
