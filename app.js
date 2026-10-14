@@ -387,7 +387,19 @@ function selectionNoteEditor(flow, order) {
   const value = notes?.[order.id] ?? order.note ?? "";
   const mapLinks = flow === "session" ? window._sessionMaps : window._addMaps;
   const mapsLink = mapLinks?.[order.id] ?? order.mapsLink ?? "";
-  return `<div class="selection-note"><label for="${flow}-note-${safe(order.id)}">Ghi chú giao hàng</label><textarea id="${flow}-note-${safe(order.id)}" data-selection-note="${safe(order.id)}" data-note-flow="${flow}" rows="2" placeholder="Ví dụ: Giao trước 10:00, gọi trước khi đến">${safe(value)}</textarea><button class="note-clear" type="button" data-action="clear-selection-note" data-id="${safe(order.id)}" data-flow="${flow}" ${value.trim() ? "" : "disabled"}>Xóa ghi chú</button><label for="${flow}-maps-${safe(order.id)}">Link Google Maps (không bắt buộc)</label><input class="input maps-input" id="${flow}-maps-${safe(order.id)}" type="url" inputmode="url" placeholder="https://maps.app.goo.gl/..." value="${safe(mapsLink)}" data-selection-maps="${safe(order.id)}" data-map-flow="${flow}" /><button class="note-clear" type="button" data-action="clear-selection-map" data-id="${safe(order.id)}" data-flow="${flow}" ${mapsLink.trim() ? "" : "disabled"}>Xóa link</button></div>`;
+  const shift = flow === "session" ? window._sessionShifts?.[order.id] || sessionDefaultShift : addOrdersShift;
+  return `<details class="selection-details"><summary><span class="selection-details-copy"><strong data-selection-shift-label>Ca ${safe(shift)}</strong><small data-selection-details-status>${value.trim() ? "Có ghi chú" : "Thêm ghi chú"} · ${mapsLink.trim() ? "Có vị trí" : "Thêm Google Maps"}</small></span>${icon("chevron", 16)}</summary><div class="selection-details-body">${flow === "session" ? `<select class="shift-select" aria-label="Ca giao đơn ${safe(order.id)}" data-shift-selection="${safe(order.id)}">${SHIFT_OPTIONS.map(item => `<option ${item === shift ? "selected" : ""}>${item}</option>`).join("")}</select>` : ""}<div class="selection-note"><label for="${flow}-note-${safe(order.id)}">Ghi chú giao hàng</label><textarea id="${flow}-note-${safe(order.id)}" data-selection-note="${safe(order.id)}" data-note-flow="${flow}" rows="2" placeholder="Ví dụ: Giao trước 10:00, gọi trước khi đến">${safe(value)}</textarea><button class="note-clear" type="button" data-action="clear-selection-note" data-id="${safe(order.id)}" data-flow="${flow}" ${value.trim() ? "" : "disabled"}>Xóa ghi chú</button><label for="${flow}-maps-${safe(order.id)}">Link Google Maps (không bắt buộc)</label><input class="input maps-input" id="${flow}-maps-${safe(order.id)}" type="url" inputmode="url" placeholder="https://maps.app.goo.gl/..." value="${safe(mapsLink)}" data-selection-maps="${safe(order.id)}" data-map-flow="${flow}" /><button class="note-clear" type="button" data-action="clear-selection-map" data-id="${safe(order.id)}" data-flow="${flow}" ${mapsLink.trim() ? "" : "disabled"}>Xóa link</button></div></div></details>`;
+}
+
+function selectionDefaultShift(id, label, value) {
+  return `<details class="selection-default-shift"><summary><span>${label}</span><strong data-default-shift-label>${safe(value)}</strong>${icon("chevron", 16)}</summary><select class="select" id="${id}">${SHIFT_OPTIONS.map(shift => `<option ${shift === value ? "selected" : ""}>${shift}</option>`).join("")}</select></details>`;
+}
+
+function updateSelectionDetailsStatus(details) {
+  const note = details?.querySelector("[data-selection-note]")?.value.trim();
+  const map = details?.querySelector("[data-selection-maps]")?.value.trim();
+  const status = details?.querySelector("[data-selection-details-status]");
+  if (status) status.textContent = `${note ? "Có ghi chú" : "Thêm ghi chú"} · ${map ? "Có vị trí" : "Thêm Google Maps"}`;
 }
 
 function sessionCreateScreen() {
@@ -395,13 +407,11 @@ function sessionCreateScreen() {
   if (activeSession()) return sessionScreen();
   const pending = state.orders.filter(order => canSeeOrder(order) && order.deliveryStatus === "Chưa giao hàng");
   const selectedIds = window._sessionSelection || [];
-  const shifts = window._sessionShifts || {};
-  const shiftOptions = (selected, id) => `<select class="shift-select" aria-label="Ca giao đơn ${safe(id)}" data-shift-selection="${safe(id)}">${SHIFT_OPTIONS.map(shift => `<option ${shift === selected ? "selected" : ""}>${shift}</option>`).join("")}</select>`;
   return `<main class="page">
-    <div class="form-field"><label for="default-shift">Ca mặc định</label><select class="select" id="default-shift">${SHIFT_OPTIONS.map(shift => `<option ${shift === sessionDefaultShift ? "selected" : ""}>${shift}</option>`).join("")}</select></div>
+    ${selectionDefaultShift("default-shift", "Ca mặc định", sessionDefaultShift)}
     <div class="list">${pending.map(order => {
       const selected = selectedIds.includes(order.id);
-      return `<div class="list-card shift-selection-row">${orderSelectionButton(order, selected, "toggle-session-order")}${selected ? `${shiftOptions(shifts[order.id] || sessionDefaultShift, order.id)}${selectionNoteEditor("session", order)}` : ""}</div>`;
+      return `<div class="list-card shift-selection-row">${orderSelectionButton(order, selected, "toggle-session-order")}${selected ? selectionNoteEditor("session", order) : ""}</div>`;
     }).join("") || '<div class="empty-state">Không có đơn để giao.</div>'}</div>
     <div class="bottom-actions single"><div class="selection-count">Đã chọn ${selectedIds.length} đơn</div><button class="button" data-action="create-session" ${selectedIds.length ? "" : "disabled"}>Tạo phiên</button></div>
   </main>`;
@@ -493,7 +503,7 @@ function addOrdersScreen() {
   const pending = state.orders.filter(order => order.deliveryStatus === "Chưa giao hàng");
   const selectedIds = window._addSelection || [];
   return `<main class="page">
-    <div class="form-field"><label for="add-shift">Ca giao</label><select class="select" id="add-shift">${SHIFT_OPTIONS.map(shift => `<option ${shift === addOrdersShift ? "selected" : ""}>${shift}</option>`).join("")}</select></div>
+    ${selectionDefaultShift("add-shift", "Ca giao", addOrdersShift)}
     <div class="list">${pending.map(order => {
       const selected = selectedIds.includes(order.id);
       return `<div class="list-card shift-selection-row">${orderSelectionButton(order, selected, "toggle-add-order")}${selected ? selectionNoteEditor("add", order) : ""}</div>`;
@@ -1501,12 +1511,29 @@ app.addEventListener("keydown", event => {
 });
 
 app.addEventListener("change", async event => {
-  if (event.target.matches("#default-shift")) { sessionDefaultShift = event.target.value; return; }
-  if (event.target.matches("#add-shift")) { addOrdersShift = event.target.value; return; }
+  if (event.target.matches("#default-shift")) {
+    sessionDefaultShift = event.target.value;
+    event.target.closest("details")?.querySelector("[data-default-shift-label]")?.replaceChildren(document.createTextNode(event.target.value));
+    app.querySelectorAll("[data-shift-selection]").forEach(select => {
+      if (window._sessionShifts?.[select.dataset.shiftSelection]) return;
+      select.value = event.target.value;
+      const label = select.closest(".selection-details")?.querySelector("[data-selection-shift-label]");
+      if (label) label.textContent = `Ca ${event.target.value}`;
+    });
+    return;
+  }
+  if (event.target.matches("#add-shift")) {
+    addOrdersShift = event.target.value;
+    event.target.closest("details")?.querySelector("[data-default-shift-label]")?.replaceChildren(document.createTextNode(event.target.value));
+    app.querySelectorAll("[data-selection-shift-label]").forEach(label => label.textContent = `Ca ${event.target.value}`);
+    return;
+  }
   if (event.target.matches("[data-shift-selection]")) {
     const shifts = window._sessionShifts || {};
     shifts[event.target.dataset.shiftSelection] = event.target.value;
     window._sessionShifts = shifts;
+    const label = event.target.closest(".selection-details")?.querySelector("[data-selection-shift-label]");
+    if (label) label.textContent = `Ca ${event.target.value}`;
     return;
   }
   if (event.target.matches("[data-session-shift]")) {
@@ -1531,6 +1558,7 @@ app.addEventListener("input", event => {
     else window._addNotes = notes;
     const clearButton = event.target.parentElement.querySelector('[data-action="clear-selection-note"]');
     if (clearButton) clearButton.disabled = !event.target.value.trim();
+    updateSelectionDetailsStatus(event.target.closest(".selection-details"));
   } else if (event.target.matches("[data-selection-maps]")) {
     const links = event.target.dataset.mapFlow === "session" ? (window._sessionMaps || {}) : (window._addMaps || {});
     links[event.target.dataset.selectionMaps] = event.target.value;
@@ -1538,6 +1566,7 @@ app.addEventListener("input", event => {
     else window._addMaps = links;
     const clearButton = event.target.parentElement.querySelector('[data-action="clear-selection-map"]');
     if (clearButton) clearButton.disabled = !event.target.value.trim();
+    updateSelectionDetailsStatus(event.target.closest(".selection-details"));
   }
 });
 

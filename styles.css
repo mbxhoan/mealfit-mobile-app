@@ -213,6 +213,21 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .shift-selection-row { display: grid; gap: 7px; padding: 10px; }
 .shift-selection-row .select-order { align-items: flex-start; padding: 4px; border: 0; background: transparent; }
 .shift-selection-row .checkmark { margin-top: 3px; }
+.selection-default-shift, .selection-details { width: 100%; }
+.selection-default-shift { margin-bottom: 10px; }
+.selection-default-shift > summary, .selection-details > summary { min-height: 40px; padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--line); border-radius: 10px; background: #fff; cursor: pointer; list-style: none; }
+.selection-default-shift > summary::-webkit-details-marker, .selection-details > summary::-webkit-details-marker { display: none; }
+.selection-default-shift > summary span { color: var(--muted); font-size: 12px; }
+.selection-default-shift > summary strong { margin-left: auto; font-size: 13px; font-weight: 650; }
+.selection-details > summary { min-height: 38px; }
+.selection-details[open] > summary, .selection-default-shift[open] > summary { border-color: #f5a68f; background: var(--accent-soft); }
+.selection-default-shift > select { margin-top: 8px; }
+.selection-details-copy { min-width: 0; display: grid; gap: 1px; }
+.selection-details-copy strong { font-size: 11px; font-weight: 700; }
+.selection-details-copy small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.selection-details > summary svg, .selection-default-shift > summary svg { flex: 0 0 auto; transition: transform .14s ease; }
+.selection-details[open] > summary svg, .selection-default-shift[open] > summary svg { transform: rotate(90deg); }
+.selection-details-body { display: grid; gap: 8px; padding-top: 8px; }
 .selection-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .selection-card-top, .selection-customer-line { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .selection-card-top .order-number { font-size: 11px; }
@@ -398,4 +413,8 @@ button:disabled { cursor: not-allowed; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
+
+@media (max-width: 599px) {
+  .app-shell input, .app-shell select, .app-shell textarea { font-size: 16px; }
 }
