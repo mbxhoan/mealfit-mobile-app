@@ -15,21 +15,36 @@ export default handler(async (req, res) => {
   const meta = await sql`SELECT updated_at FROM mealfit_sync_meta WHERE key = 'last-sheet-pull' LIMIT 1`;
   const recent = body.force !== true && meta[0] && Date.now() - new Date(meta[0].updated_at).valueOf() < 15_000;
   let count = 0;
+  let received = 0;
+  let pages = 0;
+  let stage = recent ? "cache" : "n8n-fetch";
   if (!recent) {
     try {
       const previousPull = meta[0]?.updated_at ? new Date(new Date(meta[0].updated_at).valueOf() - 120_000).toISOString() : "";
       let cursor = "";
       let complete = false;
       for (let page = 0; page < 100; page++) {
+        pages++;
         const result = await fetchSheetOrders({ cursor, limit: 500, modifiedSince: previousPull });
+        received += result.rows.length;
+        stage = "postgres-import";
         count += await importSheetOrders(result.rows);
+        stage = "n8n-fetch";
         if (!result.nextCursor) { complete = true; break; }
         cursor = result.nextCursor;
       }
       if (!complete) throw new AppError(413, "SHEET_PAGE_LIMIT", "Có quá nhiều đơn thay đổi trong một lần đồng bộ. Vui lòng thử lại.");
+      stage = "sync-checkpoint";
       await markSheetPull(count);
-    } catch (error) { throw error instanceof AppError ? error : new AppError(502, "SHEET_UNAVAILABLE", "Không thể đồng bộ đơn từ Google Sheet."); }
+    } catch (error) {
+      req.apiLogDetail = { stage, received, imported: count, pages };
+      if (error instanceof AppError) throw error;
+      const wrapped = new AppError(502, "SHEET_IMPORT_FAILED", "Không thể đồng bộ đơn từ Google Sheet.");
+      wrapped.cause = error;
+      throw wrapped;
+    }
   }
+  req.apiLogDetail = { stage: recent ? "cache" : "complete", received, imported: count, pages };
   waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
   send(res, 200, { ok: true, refreshed: !recent, imported: count, message: recent ? "Dữ liệu vừa được đồng bộ." : "Đã cập nhật từ Google Sheet." });
 });

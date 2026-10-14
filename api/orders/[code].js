@@ -19,6 +19,7 @@ export default handler(async (req, res) => {
     await importSheetOrders([sheetRow]);
     rows = await sql`SELECT * FROM mealfit_orders WHERE code = ${code} LIMIT 1`;
     order = rows[0] && orderFromRow(rows[0]);
+    if (user.role === "shipper" && order.assignedUserId && order.assignedUserId !== user.id) throw new AppError(403, "ORDER_FORBIDDEN", "Đơn hàng này chưa được giao cho tài khoản của bạn.");
   }
   send(res, 200, { data: order });
 });

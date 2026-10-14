@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { AppError, requireEnv } from "./core.mjs";
+import { AppError, requireEnv, setApiActor } from "./core.mjs";
 import { getSql } from "./db.mjs";
 
 if (process.env.VERCEL_ENV !== "production") {
@@ -50,6 +50,8 @@ export function getSessionUser(req) {
 export function requireUser(req) {
   const user = getSessionUser(req);
   if (!user) throw new AppError(401, "AUTH_REQUIRED", "Đăng nhập lại khi có kết nối mạng.");
+  req.mealfitUser = user;
+  setApiActor(user.id);
   return user;
 }
 

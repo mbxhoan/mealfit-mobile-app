@@ -1,4 +1,4 @@
-const CACHE = "mealfit-shell-v1";
+const CACHE = "mealfit-shell-v2";
 const SHELL = ["/", "/manifest.webmanifest", "/logo-transparent.png", "/mealfit-payment-qr.png"];
 
 self.addEventListener("install", event => {

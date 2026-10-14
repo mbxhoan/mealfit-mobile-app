@@ -54,13 +54,20 @@ let routeDragFrame = null;
 let toastTimer = null;
 let syncTimer = null;
 let syncRunning = false;
+let sheetSyncRunning = false;
+let orderSyncRunningId = null;
 let syncErrorShown = false;
-let lastSheetRefreshAt = 0;
 let stateWriteRunning = false;
 let lastServerRtt = null;
 let serverCounts = {};
 let lastSyncAt = null;
 let conflictCount = 0;
+let activityKind = "api";
+let activityRows = [];
+let activityCursor = "";
+let activityHasMore = false;
+let activityLoading = false;
+let activityError = "";
 let webcam = null;
 const photoUrls = new Map();
 const app = document.querySelector("#app");
@@ -99,6 +106,7 @@ const iconPaths = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   chevron: '<path d="m9 18 6-6-6-6"/>',
   signal: '<path d="M4 20v-4M9 20v-7M14 20V9M19 20V4"/>',
+  activity: '<path d="M4 19V5M4 19h17"/><path d="m7 14 4-4 3 2 5-6"/><circle cx="7" cy="14" r="1"/><circle cx="11" cy="10" r="1"/><circle cx="14" cy="12" r="1"/>',
   grip: '<circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/>'
 };
 
@@ -115,14 +123,16 @@ const networkSignal = () => {
 };
 const networkIndicator = () => {
   const signal = networkSignal();
-  return `<span class="network-indicator signal-${signal}" role="status" aria-label="${networkLabels[signal]}">${icon("signal", 18)}</span>`;
+  return user
+    ? `<button type="button" class="network-indicator signal-${signal}" data-action="test-api" aria-label="Kiểm tra API · ${networkLabels[signal]}" title="Kiểm tra API">${icon("signal", 18)}</button>`
+    : `<span class="network-indicator signal-${signal}" role="status" aria-label="${networkLabels[signal]}">${icon("signal", 18)}</span>`;
 };
 function updateNetworkIndicator() {
   const indicator = document.querySelector(".network-indicator");
   if (!indicator) return;
   const signal = networkSignal();
   indicator.className = `network-indicator signal-${signal}`;
-  indicator.setAttribute("aria-label", networkLabels[signal]);
+  indicator.setAttribute("aria-label", user ? `Kiểm tra API · ${networkLabels[signal]}` : networkLabels[signal]);
 }
 window.addEventListener("online", updateNetworkIndicator);
 window.addEventListener("offline", updateNetworkIndicator);
@@ -164,11 +174,13 @@ function sessionBadge(status) {
   return `<span class="status ${color}">${label}</span>`;
 }
 
-function appShell(content, { title = "", back = false, refresh = false } = {}) {
+function appShell(content, { title = "", back = false } = {}) {
   const left = back
     ? `<button class="back-button" data-action="back" aria-label="Quay lại">${icon("arrow", 18)}<span>${safe(title)}</span></button>`
     : `<span class="topbar-spacer" aria-hidden="true"></span>`;
-  const tools = `${networkIndicator()}${refresh ? `<button class="icon-button" data-action="refresh" aria-label="Làm mới thông tin">${icon("refresh")}</button>` : ""}<button class="role-chip" data-action="logout" aria-label="Đổi tài khoản hoặc đăng xuất">${safe(user?.name || "")}</button>`;
+  const detailOrderId = currentView()?.name === "order" ? currentView().orderId : "";
+  const syncing = syncRunning || sheetSyncRunning || Boolean(orderSyncRunningId);
+  const tools = `${networkIndicator()}<button class="icon-button" data-action="${detailOrderId ? "refresh-order" : "refresh"}" data-id="${safe(detailOrderId)}" aria-label="${syncing ? "Đang đồng bộ đơn hàng" : detailOrderId ? `Đồng bộ đơn ${safe(detailOrderId)}` : "Đồng bộ đơn hàng"}" ${syncing ? "disabled" : ""}>${syncing ? '<span class="spinner" aria-hidden="true"></span>' : icon("refresh")}</button><button class="role-chip" data-action="logout" aria-label="Đổi tài khoản hoặc đăng xuất">${safe(user?.name || "")}</button>`;
   return `<div class="app-shell"><header class="topbar">${left}<img class="topbar-brand" src="/logo-transparent.png" alt="Mealfit"/><div class="topbar-tools">${tools}</div></header>${content}</div>${renderModal()}`;
 }
 
@@ -196,7 +208,8 @@ function homeScreen() {
   const counts = orderCounts();
   const menu = [
     { title: "Đơn hàng", count: `${counts.pending + counts.transit + counts.delivered} đơn`, icon: "orders", action: "orders" },
-    { title: role === "shipper" ? "Giao hàng" : "Phiên giao hàng", count: role === "shipper" ? (activeSession() ? "Tiếp tục phiên" : "Tạo phiên") : "Theo dõi tuyến", icon: "delivery", action: role === "shipper" ? "delivery" : "session-overview" }
+    { title: role === "shipper" ? "Giao hàng" : "Phiên giao hàng", count: role === "shipper" ? (activeSession() ? "Tiếp tục phiên" : "Tạo phiên") : "Theo dõi tuyến", icon: "delivery", action: role === "shipper" ? "delivery" : "session-overview" },
+    ...(role === "admin" ? [{ title: "Hoạt động", count: "API · ứng dụng", icon: "activity", action: "activity" }] : [])
   ];
   return `<main class="page">
     <p class="home-date">${lastSyncAt ? `Đồng bộ ${timeLabel(lastSyncAt)}` : "Đơn hàng sẽ tải khi có kết nối"}</p>
@@ -207,9 +220,57 @@ function homeScreen() {
     </div>
     <div class="menu-grid">${menu.map(item => `<button class="menu-card" data-action="open-${item.action}"><span class="menu-icon">${icon(item.icon, 23)}</span><span><span class="menu-label">${item.title}</span><span class="menu-count">${item.count}</span></span></button>`).join("")}${role === "admin" && conflictCount ? `<button class="menu-card" data-action="open-conflicts"><span class="menu-icon">${icon("orders", 23)}</span><span><span class="menu-label">Xung đột</span><span class="menu-count">${conflictCount} đơn cần xử lý</span></span></button>` : ""}</div>
     ${!state.orders.length ? `<div class="empty-state" style="margin-top:14px">Chưa tải được đơn hàng.<button class="button secondary full" style="margin-top:12px" data-action="refresh">Thử đồng bộ</button></div>` : ""}
-    <p class="sync-state" aria-live="polite">${syncRunning ? "Đang đồng bộ" : (navigator.onLine ? "Đã lưu trên thiết bị" : "Ngoại tuyến · Sẽ đồng bộ khi có mạng")}</p>
+    ${syncRunning || sheetSyncRunning ? `<div class="sync-loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><div class="sync-loading-copy"><strong>Đang đồng bộ đơn hàng</strong><span class="sync-loading-skeleton" aria-hidden="true"><i></i><i></i><i></i></span></div></div>` : `<p class="sync-state" aria-live="polite">${navigator.onLine ? "Đã lưu trên thiết bị" : "Ngoại tuyến · Sẽ đồng bộ khi có mạng"}</p>`}
     ${activeSession() && role === "shipper" ? `<div class="divider"></div><button class="button full" data-action="open-session">Tiếp tục phiên giao hàng ${icon("chevron", 18)}</button>` : ""}
   </main>`;
+}
+
+function activityScreen() {
+  if (role !== "admin") return `<main class="page"><div class="empty-state">Chỉ admin được xem lịch sử hệ thống.</div></main>`;
+  return `<main class="page">
+    <div class="filter-row" role="tablist" aria-label="Loại lịch sử">
+      <button class="filter-chip ${activityKind === "api" ? "active" : ""}" role="tab" aria-selected="${activityKind === "api"}" data-action="activity-kind" data-kind="api" ${activityLoading ? "disabled" : ""}>API</button>
+      <button class="filter-chip ${activityKind === "activity" ? "active" : ""}" role="tab" aria-selected="${activityKind === "activity"}" data-action="activity-kind" data-kind="activity" ${activityLoading ? "disabled" : ""}>Ứng dụng</button>
+    </div>
+    ${activityError ? `<div class="empty-state"><strong>Không tải được lịch sử</strong>${safe(activityError)}<button class="button secondary full" style="margin-top:12px" data-action="reload-activity">Thử lại</button></div>` : ""}
+    <div class="list">${activityRows.map(item => {
+      const detail = item.detail || {};
+      const isApi = item.entityType === "api";
+      const status = Number(detail.status) || Number(item.operation.match(/\s(\d{3})$/)?.[1]) || 0;
+      const actor = accounts[item.actorId] || item.actorId || "Hệ thống";
+      return `<article class="list-card activity-card">
+        <div class="card-top"><strong>${safe(item.entityId)}</strong><span class="activity-status ${status >= 400 || detail.errorCode ? "failed" : "ok"}">${safe(item.operation)}</span></div>
+        <p class="activity-meta">${safe(actor)} · ${safe(dateLabel(item.createdAt))} ${safe(timeLabel(item.createdAt))}${detail.durationMs != null ? ` · ${Math.max(0, Number(detail.durationMs))} ms` : ""}</p>
+        ${detail.stage ? `<p class="activity-meta">Bước: ${safe(detail.stage)}${detail.received != null ? ` · Nhận ${detail.received}` : ""}${detail.imported != null ? ` · Nhập ${detail.imported}` : ""}${detail.pages != null ? ` · ${detail.pages} trang` : ""}</p>` : ""}
+        ${detail.rowCount != null ? `<p class="activity-meta">${safe(String(detail.rowCount))} dòng nhận từ webhook</p>` : ""}
+        ${detail.errorCode || detail.errorMessage ? `<p class="activity-error">${safe(detail.errorCode || "Lỗi")}${detail.errorMessage ? ` · ${safe(detail.errorMessage)}` : ""}</p>` : ""}
+        ${isApi && item.operationId ? `<small class="activity-trace">ID: ${safe(item.operationId)}</small>` : ""}
+      </article>`;
+    }).join("")}</div>
+    ${activityLoading ? `<div class="empty-state"><span class="spinner" aria-label="Đang tải"></span></div>` : !activityRows.length && !activityError ? `<div class="empty-state">Chưa có lịch sử ${activityKind === "api" ? "API" : "hoạt động"}.</div>` : ""}
+    ${activityHasMore ? `<button class="button secondary full" data-action="load-more-activity" ${activityLoading ? "disabled" : ""}>${activityLoading ? "Đang tải…" : "Tải thêm"}</button>` : ""}
+  </main>`;
+}
+
+async function loadActivity(reset = false) {
+  if (role !== "admin" || activityLoading) return;
+  const cursor = reset ? "" : activityCursor;
+  if (reset) { activityRows = []; activityCursor = ""; activityHasMore = false; }
+  activityError = "";
+  activityLoading = true;
+  if (currentView()?.name === "activity") render();
+  try {
+    const params = new URLSearchParams({ view: "logs", kind: activityKind, limit: "50" });
+    if (cursor) params.set("cursor", cursor);
+    const result = await apiRequest(`/api/diagnostics?${params}`);
+    activityRows = reset ? (result.data || []) : [...activityRows, ...(result.data || [])];
+    activityCursor = result.nextCursor || "";
+    activityHasMore = Boolean(result.hasMore);
+  } catch (error) { activityError = error.message; }
+  finally {
+    activityLoading = false;
+    if (currentView()?.name === "activity") render();
+  }
 }
 
 function orderCard(order, clickable = true, selected = false) {
@@ -443,6 +504,14 @@ function addOrdersScreen() {
 
 function renderModal() {
   if (!modal) return "";
+  if (modal.type === "api-check") {
+    const rows = [
+      ["API ứng dụng", modal.result.appApi],
+      ["Database", modal.result.database],
+      ["Webhook danh sách đơn", modal.result.ordersApi]
+    ];
+    return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Kiểm tra kết nối</h2><div class="api-check-list">${rows.map(([label, result]) => `<div class="api-check-row"><span><i class="api-check-dot ${result.ok ? "ok" : "failed"}"></i>${label}</span><strong>${result.ok ? "Kết nối tốt" : result.status ? `Lỗi HTTP ${result.status}` : "Không kết nối"} · ${result.durationMs} ms</strong>${result.message ? `<small>${safe(result.message)}</small>` : ""}${result.errorCode ? `<small>Mã lỗi: ${safe(result.errorCode)}</small>` : ""}</div>`).join("")}</div><div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="test-api">Kiểm tra lại</button></div></section></div>`;
+  }
   if (modal.type === "payment") {
     const order = orderById(modal.orderId);
     if (!order) return "";
@@ -491,13 +560,14 @@ function render() {
   switch (view.name) {
     case "home": content = homeScreen(); options.back = false; break;
     case "orders": content = ordersScreen(); options.title = "Đơn hàng"; break;
+    case "activity": content = activityScreen(); options.title = "Hoạt động"; break;
     case "dishes": content = dishesScreen(); options.title = "Món"; break;
     case "delivery": content = singleDeliveryScreen(); options.title = "Giao lẻ"; break;
-    case "sessions-overview": content = staffSessionsScreen(); options.title = "Phiên giao hàng"; options.refresh = true; break;
+    case "sessions-overview": content = staffSessionsScreen(); options.title = "Phiên giao hàng"; break;
     case "session-create": content = sessionCreateScreen(); options.title = "Tạo phiên"; break;
-    case "session": content = sessionScreen(); options.title = "Phiên giao"; options.refresh = true; break;
+    case "session": content = sessionScreen(); options.title = "Phiên giao"; break;
     case "add-orders": content = addOrdersScreen(); options.title = "Thêm đơn"; break;
-    case "order": content = orderDetailScreen(view); options.title = "Chi tiết đơn"; options.refresh = true; break;
+    case "order": content = orderDetailScreen(view); options.title = "Chi tiết đơn"; break;
     default: content = homeScreen(); options.back = false;
   }
   app.innerHTML = appShell(content, options);
@@ -571,6 +641,7 @@ async function updateState(next, message) {
 async function syncQueued() {
   if (!user || !navigator.onLine || syncRunning) return;
   syncRunning = true;
+  render();
   try {
     for (let attempt = 0; attempt < 4; attempt++) {
       const batch = await nextOutboxBatch(user.id, 40);
@@ -608,6 +679,7 @@ async function syncQueued() {
     if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
   } finally {
     syncRunning = false;
+    render();
   }
 }
 
@@ -638,30 +710,37 @@ async function syncPendingMediaDeletes() {
   await setMeta(key, remaining);
 }
 
-async function pullRemoteOrders({ sheet = false } = {}) {
-  if (!user || !navigator.onLine) return;
-  if (sheet) await apiRequest("/api/refresh", { method: "POST", body: {}, timeout: 120_000 });
-  let cursor = null;
-  let first = true;
-  do {
-    const params = new URLSearchParams({ limit: "100" });
-    if (cursor) params.set("cursor", cursor);
-    const page = await apiRequest(`/api/orders?${params}`);
-    if (first) { serverCounts = page.counts || {}; first = false; }
-    state = normalizeState(await mergeRemote({ orders: page.data || [] }, user.id));
+async function pullRemoteOrders({ sheet = false, force = false } = {}) {
+  if (!user) return;
+  if (!navigator.onLine) throw new Error("Cần kết nối mạng để đồng bộ danh sách đơn hàng.");
+  if (sheet && sheetSyncRunning) return;
+  if (sheet) { sheetSyncRunning = true; render(); }
+  try {
+    if (sheet) await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 120_000 });
+    let cursor = null;
+    let first = true;
+    do {
+      const params = new URLSearchParams({ limit: "100" });
+      if (cursor) params.set("cursor", cursor);
+      const page = await apiRequest(`/api/orders?${params}`);
+      if (first) { serverCounts = page.counts || {}; first = false; }
+      state = normalizeState(await mergeRemote({ orders: page.data || [] }, user.id));
+      lastPersistedState = cloneState(state);
+      cursor = page.nextCursor;
+      render();
+    } while (cursor);
+    const [sessions] = await Promise.all([apiRequest("/api/sessions")]);
+    state = normalizeState(await mergeRemote({ sessions: sessions.data || [] }, user.id));
     lastPersistedState = cloneState(state);
-    cursor = page.nextCursor;
+    if (role === "admin") {
+      try { conflictCount = (await apiRequest("/api/conflicts")).data.length; } catch { conflictCount = 0; }
+    }
+    lastSyncAt = Date.now();
+    await setMeta(`lastSync:${user.id}`, lastSyncAt);
     render();
-  } while (cursor);
-  const [sessions] = await Promise.all([apiRequest("/api/sessions")]);
-  state = normalizeState(await mergeRemote({ sessions: sessions.data || [] }, user.id));
-  lastPersistedState = cloneState(state);
-  if (role === "admin") {
-    try { conflictCount = (await apiRequest("/api/conflicts")).data.length; } catch { conflictCount = 0; }
+  } finally {
+    if (sheet) { sheetSyncRunning = false; render(); }
   }
-  lastSyncAt = Date.now();
-  await setMeta(`lastSync:${user.id}`, lastSyncAt);
-  render();
 }
 
 async function pullChanges() {
@@ -686,42 +765,23 @@ async function pullChanges() {
   }
 }
 
-async function refreshRemoteChanges() {
-  if (!user || !navigator.onLine || Date.now() - lastSheetRefreshAt < 60_000) return;
-  lastSheetRefreshAt = Date.now();
-  try {
-    const result = await apiRequest("/api/refresh", { method: "POST", body: {}, timeout: 120_000 });
-    if (result.imported > 0) await pullChanges();
-  } catch (error) {
-    if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
-  }
-}
-
-async function hydrateOrderDetail(orderId) {
-  if (!navigator.onLine || !user) return;
-  try {
-    const result = await apiRequest(`/api/orders/${encodeURIComponent(orderId)}?refresh=1`);
-    state = normalizeState(await mergeRemote({ orders: [result.data] }, user.id));
-    lastPersistedState = cloneState(state);
-    render();
-  } catch (error) {
-    if (error.status === 401) void logout();
-    else if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
-  }
+async function syncOrderDetail(orderId) {
+  if (!navigator.onLine || !user) throw new Error("Cần kết nối mạng để đồng bộ đơn hàng.");
+  const result = await apiRequest(`/api/orders/${encodeURIComponent(orderId)}?refresh=1`);
+  state = normalizeState(await mergeRemote({ orders: [result.data] }, user.id));
+  lastPersistedState = cloneState(state);
+  render();
 }
 
 function startBackgroundSync() {
   clearInterval(syncTimer);
   if (!user) return;
   void syncQueued();
-  void pullChanges();
   void probeNetwork();
   syncTimer = setInterval(() => {
     if (document.visibilityState === "visible") {
       void syncQueued();
-      void pullChanges();
       void probeNetwork();
-      void refreshRemoteChanges();
     }
   }, 12_000);
 }
@@ -740,7 +800,7 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
   lastSyncAt = await getMeta(`lastSync:${user.id}`) || null;
   render();
   startBackgroundSync();
-  if (refresh && navigator.onLine) {
+  if (refresh && navigator.onLine && !lastSyncAt) {
     try { await pullRemoteOrders({ sheet: true }); }
     catch (error) { showError(error.message); }
   }
@@ -1118,19 +1178,45 @@ app.addEventListener("click", async event => {
   const action = button.dataset.action;
   const id = button.dataset.id;
   if (action === "backdrop" && event.target === button) { modal = null; render(); return; }
+  if (action === "test-api") {
+    if (!setButtonBusy(button, true)) return;
+    try {
+      const result = await apiRequest("/api/diagnostics", { method: "GET", timeout: 20_000 });
+      modal = { type: "api-check", result };
+      render();
+    } catch (error) { showError(error.message); }
+    finally { if (button.isConnected) setButtonBusy(button, false); }
+    return;
+  }
   if (action === "back") { back(); return; }
   if (action === "logout") { await logout(); return; }
   if (action === "refresh") {
+    if (sheetSyncRunning || orderSyncRunningId) return;
     if (!setButtonBusy(button, true)) return;
-    try { await syncQueued(); await apiRequest("/api/refresh", { method: "POST", body: { force: true }, timeout: 120_000 }); await pullRemoteOrders(); flash("Đã làm mới dữ liệu đơn hàng."); }
+    try { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); flash("Đã làm mới dữ liệu đơn hàng."); }
     catch (error) { showError(error.message); }
     finally { setButtonBusy(button, false); }
     return;
   }
+  if (action === "refresh-order") {
+    if (sheetSyncRunning || orderSyncRunningId) return;
+    orderSyncRunningId = id;
+    render();
+    try { await syncOrderDetail(id); flash(`Đã đồng bộ đơn ${id}.`); }
+    catch (error) { if (error.status === 401) void logout(); else showError(error.message); }
+    finally { orderSyncRunningId = null; render(); }
+    return;
+  }
   if (action === "retry-sync") {
+    if (sheetSyncRunning || orderSyncRunningId) return;
+    const detailOrderId = currentView()?.name === "order" ? currentView().orderId : null;
+    if (detailOrderId) orderSyncRunningId = detailOrderId;
     modal = null; render();
-    try { await syncQueued(); await apiRequest("/api/refresh", { method: "POST", body: { force: true }, timeout: 120_000 }); await pullRemoteOrders(); flash("Đồng bộ đã hoàn tất."); }
-    catch (error) { showError(error.message); }
+    try {
+      if (detailOrderId) { await syncOrderDetail(detailOrderId); flash(`Đã đồng bộ đơn ${detailOrderId}.`); }
+      else { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); flash("Đồng bộ đã hoàn tất."); }
+    } catch (error) { if (error.status === 401) void logout(); else showError(error.message); }
+    finally { if (detailOrderId) { orderSyncRunningId = null; render(); } }
     return;
   }
   if (action === "open-conflicts") {
@@ -1159,6 +1245,13 @@ app.addEventListener("click", async event => {
     return;
   }
   if (action === "open-orders") { orderFilter = "Tất cả"; navigate({ name: "orders" }); return; }
+  if (action === "open-activity") {
+    if (role !== "admin") { flash("Chỉ admin được xem lịch sử hệ thống."); return; }
+    activityKind = "api"; navigate({ name: "activity" }); void loadActivity(true); return;
+  }
+  if (action === "activity-kind") { activityKind = button.dataset.kind === "activity" ? "activity" : "api"; void loadActivity(true); return; }
+  if (action === "load-more-activity") { void loadActivity(false); return; }
+  if (action === "reload-activity") { void loadActivity(true); return; }
   if (action === "open-dishes") { navigate({ name: "dishes" }); return; }
   if (action === "open-delivery") {
     if (role === "shipper") {
@@ -1171,8 +1264,8 @@ app.addEventListener("click", async event => {
   if (action === "open-session-overview") { navigate({ name: "sessions-overview" }); return; }
   if (action === "open-session") { sessionTab = "route"; navigate({ name: "session" }); return; }
   if (action === "open-session-history") { sessionTab = "route"; navigate({ name: "session", sessionId: id }); return; }
-  if (action === "open-order") { navigate({ name: "order", orderId: id, fromSession: false }); void hydrateOrderDetail(id); return; }
-  if (action === "open-order-session") { navigate({ name: "order", orderId: id, fromSession: true }); void hydrateOrderDetail(id); return; }
+  if (action === "open-order") { navigate({ name: "order", orderId: id, fromSession: false }); return; }
+  if (action === "open-order-session") { navigate({ name: "order", orderId: id, fromSession: true }); return; }
   if (action === "filter-orders") { orderFilter = button.dataset.filter; render(); return; }
   if (action === "select-single-order") { selectedOrderId = selectedOrderId === id ? null : id; render(); return; }
   if (action === "clear-selection-note") {
