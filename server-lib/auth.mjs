@@ -59,8 +59,16 @@ export function verifyPin(pin) {
   if (!/^\d{4,6}$/.test(String(pin || ""))) return false;
   const encoded = process.env.MEALFIT_PIN_HASH || "";
   if (process.env.VERCEL_ENV === "production") {
+    const configured = process.env.MEALFIT_PIN || "";
+    if (configured) {
+      if (!/^\d{6}$/.test(configured)) throw new AppError(503, "CONFIGURATION", "MEALFIT_PIN trong Production phải gồm 6 chữ số.");
+      const salt = requireEnv("SESSION_SECRET");
+      const actual = scryptSync(String(pin), salt, 32);
+      const expected = scryptSync(configured, salt, 32);
+      return timingSafeEqual(actual, expected);
+    }
     const match = encoded.match(/^scrypt\$([A-Za-z0-9_-]{16,})\$([A-Za-z0-9_-]{40,})$/);
-    if (!match) throw new AppError(503, "CONFIGURATION", "PIN production cần được cấu hình dưới dạng mã băm.");
+    if (!match) throw new AppError(503, "CONFIGURATION", "Chưa cấu hình MEALFIT_PIN gồm 6 chữ số trong Production.");
     const actual = scryptSync(String(pin), Buffer.from(match[1], "base64url"), 32);
     const expected = Buffer.from(match[2], "base64url");
     return actual.length === expected.length && timingSafeEqual(actual, expected);

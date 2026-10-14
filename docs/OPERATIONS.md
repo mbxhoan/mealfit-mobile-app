@@ -11,8 +11,8 @@ Tạo database Postgres riêng cho app rồi chạy `db/migrations/001_initial.s
 | `DATABASE_URL` | Pooled connection cho local/Production; Production dự phòng sang `POSTGRES_URL` do Neon integration cấp. |
 | `MEALFIT_PREVIEW_DATABASE_URL` | Pooled connection riêng cho Preview; nếu thiếu, API Preview từ chối truy cập database thay vì dùng chung URL của Production. |
 | `SESSION_SECRET` | Secret ngẫu nhiên tối thiểu 32 byte; dùng ký cookie và băm PIN. |
-| `MEALFIT_PIN` | Local only: PIN demo `1234`; do not set in Production. |
-| `MEALFIT_PIN_HASH` | Production scrypt hash of a six digit PIN; keep the PIN itself off Vercel. Generate locally with `PIN='<chosen six digits>' node --input-type=module -e 'import { randomBytes, scryptSync } from "node:crypto"; const pin = process.env.PIN; if (!/^\\d{6}$/.test(pin || "")) throw Error("PIN must contain six digits"); const salt = randomBytes(16); console.log("scrypt$" + salt.toString("base64url") + "$" + scryptSync(pin, salt, 32).toString("base64url"))'` and store only the output in Vercel. |
+| `MEALFIT_PIN` | Local demo PIN: `1234`; Production: set one six digit PIN. The server derives and compares its scrypt hash using `SESSION_SECRET`. |
+| `MEALFIT_PIN_HASH` | Optional legacy Production scrypt hash. Leave unset when using `MEALFIT_PIN`. |
 | `N8N_BASE_URL` | Local test: `https://n8n.delfi.vn/webhook-test`; production: `https://n8n.delfi.vn/webhook`. |
 | `N8N_API_KEY` | Bearer key cho các webhook n8n. |
 | `N8N_SHEET_ID` | Local/Preview: `1kReBUO9v68J7rw3lrMQD3otsdTPrFvn2qof0F7VuIvo`; Production: `1kReBUO9v68J7rw3lrMQD3otsdTPrFvn2qof0F7Vu123`. |
