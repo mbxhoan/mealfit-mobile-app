@@ -6,7 +6,7 @@ Tạo database Postgres riêng cho app rồi chạy `db/migrations/001_initial.s
 
 | Biến | Giá trị / mục đích |
 | --- | --- |
-| `DATABASE_URL` | Chuỗi Neon Postgres, dùng pooled connection. |
+| `DATABASE_URL` | Pooled connection cho local/Preview. Production dùng `POSTGRES_URL` do Neon integration cấp; Preview không tự dùng URL chia sẻ để tránh chạm database Production. |
 | `SESSION_SECRET` | Secret ngẫu nhiên tối thiểu 32 byte; dùng ký cookie và băm PIN. |
 | `MEALFIT_PIN` | Local only: PIN demo `1234`; do not set in Production. |
 | `MEALFIT_PIN_HASH` | Production scrypt hash of a six digit PIN; keep the PIN itself off Vercel. Generate locally with `PIN='<chosen six digits>' node --input-type=module -e 'import { randomBytes, scryptSync } from "node:crypto"; const pin = process.env.PIN; if (!/^\\d{6}$/.test(pin || "")) throw Error("PIN must contain six digits"); const salt = randomBytes(16); console.log("scrypt$" + salt.toString("base64url") + "$" + scryptSync(pin, salt, 32).toString("base64url"))'` and store only the output in Vercel. |
@@ -15,7 +15,7 @@ Tạo database Postgres riêng cho app rồi chạy `db/migrations/001_initial.s
 | `N8N_SHEET_ID` | Local/Preview: `1kReBUO9v68J7rw3lrMQD3otsdTPrFvn2qof0F7VuIvo`; Production: `1kReBUO9v68J7rw3lrMQD3otsdTPrFvn2qof0F7Vu123`. |
 | `N8N_FOLDER_ID` | Thư mục Google Drive đích. ID production chưa được cấp; không bật upload production khi thiếu biến này. |
 | `BLOB_READ_WRITE_TOKEN` | Private Vercel Blob để giữ ảnh trước khi n8n nhận và lưu backup database. |
-| `CRON_SECRET` | Secret bảo vệ `/api/cron/maintenance`. |
+| `CRON_SECRET` | Secret Bearer bảo vệ cron tại `/api/refresh`; đường dẫn cũ `/api/cron/maintenance` vẫn được rewrite tương thích. |
 
 Vercel app chỉ gọi API webhook n8n; không cần Apps Script URL/secret trong biến môi trường Vercel.
 Không dùng chung database, Blob token, PIN hay webhook secret giữa Preview và Production. Tạo Vercel project riêng `mealfit-shipping`; không liên kết vào các project Mealfit hiện có. Production cần Vercel Pro vì đây là ứng dụng vận hành thương mại. Hobby chỉ dùng cho thử nghiệm cá nhân.

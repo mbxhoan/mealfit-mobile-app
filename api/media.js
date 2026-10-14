@@ -1,10 +1,10 @@
-import { put } from "@vercel/blob";
+import { del, get, put } from "@vercel/blob";
 import { randomUUID } from "node:crypto";
-import { handler, requireMethod, send, AppError } from "./lib/core.mjs";
-import { assertSameOrigin, requireUser } from "./lib/auth.mjs";
-import { getSql } from "./lib/db.mjs";
-import { requireEnv } from "./lib/core.mjs";
-import { n8nRequest } from "./lib/n8n.mjs";
+import { handler, requireMethod, send, AppError } from "../server-lib/core.mjs";
+import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
+import { getSql } from "../server-lib/db.mjs";
+import { requireEnv } from "../server-lib/core.mjs";
+import { n8nRequest } from "../server-lib/n8n.mjs";
 
 export const config = { api: { bodyParser: false } };
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -51,8 +51,32 @@ async function uploadToN8n({ mediaId, orderCode, customer, blob, type, filename 
 export default handler(async (req, res) => {
   const user = requireUser(req);
   const sql = getSql();
+  const url = new URL(req.url, "https://mealfit.local");
+  const id = String(req.query?.id || url.searchParams.get("id") || "");
+  if (req.method === "GET" && id && !url.searchParams.has("code")) {
+    const rows = await sql`SELECT m.*, o.assigned_user_id FROM mealfit_media m JOIN mealfit_orders o ON o.code = m.order_code WHERE m.media_id = ${id} LIMIT 1`;
+    const media = rows[0];
+    if (!media) throw new AppError(404, "MEDIA_NOT_FOUND", "Không tìm thấy ảnh.");
+    if (user.role === "shipper" && media.assigned_user_id !== user.id) throw new AppError(403, "MEDIA_FORBIDDEN", "Không có quyền xem ảnh này.");
+    const result = await get(media.blob_pathname, { access: "private" });
+    if (!result || result.statusCode !== 200) throw new AppError(404, "MEDIA_NOT_FOUND", "Ảnh đã bị xóa hoặc không còn khả dụng.");
+    res.writeHead(200, { "content-type": media.content_type, "cache-control": "private, max-age=3600", "content-length": result.blob.size, "x-content-type-options": "nosniff" });
+    result.stream.pipe(res);
+    return;
+  }
+  if (req.method === "DELETE" && id) {
+    assertSameOrigin(req);
+    const rows = await sql`SELECT m.*, o.assigned_user_id FROM mealfit_media m JOIN mealfit_orders o ON o.code = m.order_code WHERE m.media_id = ${id} LIMIT 1`;
+    const media = rows[0];
+    if (!media) throw new AppError(404, "MEDIA_NOT_FOUND", "Không tìm thấy ảnh.");
+    if (user.role === "shipper" && media.assigned_user_id !== user.id) throw new AppError(403, "MEDIA_FORBIDDEN", "Không có quyền xóa ảnh này.");
+    await del(media.blob_pathname, { access: "private" });
+    await sql`UPDATE mealfit_media SET status = 'deleted', updated_at = now() WHERE media_id = ${id}`;
+    send(res, 200, { ok: true, id });
+    return;
+  }
   if (req.method === "GET") {
-    const code = String(req.query?.code || new URL(req.url, "https://mealfit.local").searchParams.get("code") || "");
+    const code = String(req.query?.code || url.searchParams.get("code") || "");
     await canAccessOrder(code, user);
     const rows = await sql`SELECT media_id AS id, filename AS name, content_type AS "contentType", status, created_at AS "createdAt" FROM mealfit_media WHERE order_code = ${code} AND status <> 'deleted' ORDER BY created_at`;
     send(res, 200, { data: rows });
@@ -60,7 +84,6 @@ export default handler(async (req, res) => {
   }
   requireMethod(req, "POST");
   assertSameOrigin(req);
-  const url = new URL(req.url, "https://mealfit.local");
   const orderCode = url.searchParams.get("code") || "";
   const mediaId = url.searchParams.get("id") || randomUUID();
   if (!/^[0-9a-f-]{36}$/i.test(mediaId)) throw new AppError(400, "INVALID_MEDIA", "Mã ảnh không hợp lệ.");

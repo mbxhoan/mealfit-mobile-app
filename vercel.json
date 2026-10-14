@@ -5,11 +5,19 @@
   "outputDirectory": "dist",
   "installCommand": "npm install",
   "functions": {
-    "api/cron/*.js": { "maxDuration": 300 },
     "api/refresh.js": { "maxDuration": 300 },
     "api/media.js": { "maxDuration": 60 }
   },
-  "crons": [{ "path": "/api/cron/maintenance", "schedule": "0 3 * * *" }],
+  "crons": [{ "path": "/api/refresh", "schedule": "0 3 * * *" }],
+  "rewrites": [
+    { "source": "/api/auth/login", "destination": "/api/auth?action=login" },
+    { "source": "/api/auth/logout", "destination": "/api/auth?action=logout" },
+    { "source": "/api/auth/session", "destination": "/api/auth?action=session" },
+    { "source": "/api/orders/:code", "destination": "/api/orders?code=:code" },
+    { "source": "/api/media/:id", "destination": "/api/media?id=:id" },
+    { "source": "/api/health", "destination": "/api/ping?database=1" },
+    { "source": "/api/cron/maintenance", "destination": "/api/refresh" }
+  ],
   "headers": [
     { "source": "/sw.js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }, { "key": "Service-Worker-Allowed", "value": "/" }] },
     { "source": "/manifest.webmanifest", "headers": [{ "key": "Content-Type", "value": "application/manifest+json" }] }

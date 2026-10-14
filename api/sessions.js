@@ -1,6 +1,6 @@
-import { handler, requireMethod, send } from "./lib/core.mjs";
-import { requireUser } from "./lib/auth.mjs";
-import { getSql } from "./lib/db.mjs";
+import { handler, requireMethod, send } from "../server-lib/core.mjs";
+import { requireUser } from "../server-lib/auth.mjs";
+import { getSql } from "../server-lib/db.mjs";
 
 export default handler(async (req, res) => {
   requireMethod(req, "GET");

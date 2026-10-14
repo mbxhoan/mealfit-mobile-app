@@ -1,7 +1,8 @@
-import { handler, requireMethod, send, AppError } from "./lib/core.mjs";
-import { requireUser } from "./lib/auth.mjs";
-import { getSql } from "./lib/db.mjs";
-import { orderFromRow } from "./lib/sync.mjs";
+import { handler, requireMethod, send, AppError } from "../server-lib/core.mjs";
+import { requireUser } from "../server-lib/auth.mjs";
+import { getSql } from "../server-lib/db.mjs";
+import { importSheetOrders, orderFromRow } from "../server-lib/sync.mjs";
+import { fetchSheetOrder } from "../server-lib/n8n.mjs";
 
 function cursorFrom(value) {
   if (!value) return null;
@@ -17,6 +18,23 @@ export default handler(async (req, res) => {
   requireMethod(req, "GET");
   const user = requireUser(req);
   const url = new URL(req.url, `https://${req.headers.host || "mealfit.local"}`);
+  const code = String(req.query?.code || url.searchParams.get("code") || "");
+  if (code) {
+    const sql = getSql();
+    let rows = await sql`SELECT * FROM mealfit_orders WHERE code = ${code} LIMIT 1`;
+    let order = rows[0] && orderFromRow(rows[0]);
+    if (!order) throw new AppError(404, "ORDER_NOT_FOUND", "Không tìm thấy đơn hàng.");
+    if (user.role === "shipper" && order.assignedUserId && order.assignedUserId !== user.id) throw new AppError(403, "ORDER_FORBIDDEN", "Đơn hàng này chưa được giao cho tài khoản của bạn.");
+    if (url.searchParams.get("refresh") === "1") {
+      const sheetRow = await fetchSheetOrder(code).catch(error => { throw error instanceof AppError ? error : new AppError(502, "ORDER_REFRESH_FAILED", "Không thể làm mới chi tiết đơn hàng."); });
+      await importSheetOrders([sheetRow]);
+      rows = await sql`SELECT * FROM mealfit_orders WHERE code = ${code} LIMIT 1`;
+      order = rows[0] && orderFromRow(rows[0]);
+      if (user.role === "shipper" && order.assignedUserId && order.assignedUserId !== user.id) throw new AppError(403, "ORDER_FORBIDDEN", "Đơn hàng này chưa được giao cho tài khoản của bạn.");
+    }
+    send(res, 200, { data: order });
+    return;
+  }
   const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 30));
   const status = url.searchParams.get("status") || "";
   const cursor = cursorFrom(url.searchParams.get("cursor"));

@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
-import { handler, readJson, requireMethod, send, AppError } from "./lib/core.mjs";
-import { assertSameOrigin, requireUser } from "./lib/auth.mjs";
-import { withTransaction } from "./lib/db.mjs";
-import { queueUpstream, flushUpstream } from "./lib/upstream.mjs";
-import { canReuseClaim } from "./lib/orders.mjs";
+import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
+import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
+import { withTransaction } from "../server-lib/db.mjs";
+import { queueUpstream, flushUpstream } from "../server-lib/upstream.mjs";
+import { canReuseClaim } from "../server-lib/orders.mjs";
 
 export default handler(async (req, res) => {
   requireMethod(req, "POST");

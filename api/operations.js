@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
-import { handler, readJson, requireMethod, send, AppError } from "./lib/core.mjs";
-import { assertSameOrigin, requireUser } from "./lib/auth.mjs";
-import { withTransaction } from "./lib/db.mjs";
-import { DELIVERY_STATUSES, PAYMENT_STATUSES, PAYMENT_METHODS, validateOrderMutation } from "./lib/orders.mjs";
-import { queueUpstream, flushUpstream } from "./lib/upstream.mjs";
+import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
+import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
+import { withTransaction } from "../server-lib/db.mjs";
+import { DELIVERY_STATUSES, PAYMENT_STATUSES, PAYMENT_METHODS, validateOrderMutation } from "../server-lib/orders.mjs";
+import { queueUpstream, flushUpstream } from "../server-lib/upstream.mjs";
 
 const hash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 

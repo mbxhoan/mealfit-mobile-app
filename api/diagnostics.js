@@ -1,7 +1,7 @@
-import { AppError, handler, requireMethod, send } from "./lib/core.mjs";
-import { assertSameOrigin, requireUser } from "./lib/auth.mjs";
-import { getSql } from "./lib/db.mjs";
-import { fetchSheetOrders } from "./lib/n8n.mjs";
+import { AppError, handler, requireMethod, send } from "../server-lib/core.mjs";
+import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
+import { getSql } from "../server-lib/db.mjs";
+import { fetchSheetOrders } from "../server-lib/n8n.mjs";
 
 export default handler(async (req, res) => {
   requireMethod(req, "GET");

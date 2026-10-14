@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { handler, readJson, requireMethod, send, AppError } from "./lib/core.mjs";
-import { assertSameOrigin, requireUser } from "./lib/auth.mjs";
-import { getSql, withTransaction } from "./lib/db.mjs";
-import { normalizeSheetOrder, validateOrderMutation } from "./lib/orders.mjs";
-import { queueUpstream } from "./lib/upstream.mjs";
+import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
+import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
+import { getSql, withTransaction } from "../server-lib/db.mjs";
+import { normalizeSheetOrder, validateOrderMutation } from "../server-lib/orders.mjs";
+import { queueUpstream } from "../server-lib/upstream.mjs";
 
 export default handler(async (req, res) => {
   const user = requireUser(req);

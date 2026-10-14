@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const workflow = JSON.parse(readFileSync(new URL("../../../docs/api/n8n.json", import.meta.url), "utf8"));
+const workflow = JSON.parse(readFileSync(new URL("../../docs/api/n8n.json", import.meta.url), "utf8"));
 
 test("n8n webhook export protects all endpoints and supports delta pagination", () => {
   const webhooks = workflow.nodes.filter(node => node.type === "n8n-nodes-base.webhook");
@@ -24,7 +24,7 @@ test("n8n webhook export protects all endpoints and supports delta pagination", 
 });
 
 test("Apps Script writes revisions under a lock and validates full update payload", () => {
-  const script = readFileSync(new URL("../../../docs/api/AppsScriptRevision.gs", import.meta.url), "utf8");
+  const script = readFileSync(new URL("../../docs/api/AppsScriptRevision.gs", import.meta.url), "utf8");
   assert.match(script, /LockService\.getScriptLock\(\)/);
   assert.match(script, /expected_revision/);
   assert.match(script, /operation_id/);

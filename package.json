@@ -11,7 +11,7 @@
     "dev:vercel": "vercel dev",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test domain.test.mjs local-store.test.mjs api/lib/*.test.mjs"
+    "test": "node --test domain.test.mjs local-store.test.mjs server-lib/*.test.mjs api-routes.test.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.0",

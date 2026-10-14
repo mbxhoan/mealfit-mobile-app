@@ -1,12 +1,16 @@
 import { neon, Pool } from "@neondatabase/serverless";
 import { requireEnv } from "./core.mjs";
 
+function databaseUrl() {
+  return process.env.DATABASE_URL || (process.env.VERCEL_ENV === "production" ? process.env.POSTGRES_URL : "") || requireEnv("DATABASE_URL", "Cơ sở dữ liệu chưa được cấu hình.");
+}
+
 export function getSql() {
-  return neon(requireEnv("DATABASE_URL", "Cơ sở dữ liệu chưa được cấu hình."));
+  return neon(databaseUrl());
 }
 
 export async function withTransaction(callback) {
-  const pool = new Pool({ connectionString: requireEnv("DATABASE_URL", "Cơ sở dữ liệu chưa được cấu hình."), max: 1 });
+  const pool = new Pool({ connectionString: databaseUrl(), max: 1 });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
