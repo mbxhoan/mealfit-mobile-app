@@ -57,6 +57,7 @@ let routeDragFrame = null;
 let toastTimer = null;
 let syncTimer = null;
 let syncRunning = false;
+let photoSyncRunning = false;
 let sheetSyncRunning = false;
 let orderSyncRunningId = null;
 let syncErrorShown = false;
@@ -737,17 +738,22 @@ async function syncQueued() {
 }
 
 async function syncPendingPhotos() {
-  if (!user || !navigator.onLine) return;
-  const photos = await getPendingPhotos();
-  for (const photo of photos.slice(0, 5)) {
-    try {
-      const query = new URLSearchParams({ code: photo.orderId, id: photo.id, name: photo.name || `${photo.id}.jpg` });
-      const result = await apiRequest(`/api/media?${query}`, { method: "POST", headers: { "content-type": photo.blob.type || "image/jpeg" }, body: photo.blob, timeout: 30_000 });
-      await putPhoto({ ...photo, syncState: result.status === "sent" ? "synced" : "pending", syncedAt: result.status === "sent" ? Date.now() : null });
-    } catch (error) {
-      if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
-      break;
+  if (!user || !navigator.onLine || photoSyncRunning) return;
+  photoSyncRunning = true;
+  try {
+    const photos = await getPendingPhotos();
+    for (const photo of photos.slice(0, 5)) {
+      try {
+        const query = new URLSearchParams({ code: photo.orderId, id: photo.id, name: photo.name || `${photo.id}.jpg` });
+        const result = await apiRequest(`/api/media?${query}`, { method: "POST", headers: { "content-type": photo.blob.type || "image/jpeg" }, body: photo.blob, timeout: 30_000 });
+        await putPhoto({ ...photo, syncState: result.status === "sent" ? "synced" : "pending", syncedAt: result.status === "sent" ? Date.now() : null });
+      } catch (error) {
+        if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+        break;
+      }
     }
+  } finally {
+    photoSyncRunning = false;
   }
 }
 
