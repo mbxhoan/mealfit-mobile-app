@@ -37,6 +37,7 @@ import {
   nextAppLog,
   nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, claimFirstInstallSync
 } from "./local-store.mjs";
+import { inject } from '@vercel/analytics';
 
 const defaultAccounts = [
   { id: "admin", name: "Admin", role: "admin" }, { id: "user", name: "Nhân viên", role: "user" },
@@ -1106,6 +1107,7 @@ async function logout() {
 
 async function initializeApp() {
   try {
+    inject();
     await openLocalDb();
     const cachedAccounts = await getMeta("accountDirectory");
     if (Array.isArray(cachedAccounts) && cachedAccounts.length) accounts = Object.fromEntries(cachedAccounts.map(account => [account.id, account]));
