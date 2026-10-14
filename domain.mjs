@@ -29,6 +29,33 @@ export const dueAmount = order => order.paymentStatus === "Đã thanh toán"
   ? 0
   : Math.max(0, Number.isFinite(Number(order.remainingDue)) ? Number(order.remainingDue) : order.total - order.paidAmount);
 
+export const isAssignedPendingOrder = (order, userId) => Boolean(
+  userId && order?.assignedUserId === userId && order.deliveryStatus === "Chưa giao hàng"
+);
+
+export function isOrphanInTransitOrder(state, order, userId) {
+  return Boolean(userId && order?.assignedUserId === userId && order.deliveryStatus === "Đang giao hàng"
+    && !(state.sessions || []).some(session => session.orderIds?.includes(order.id)));
+}
+
+export function resolveOrphanDelivery(state, orderId, userId, deliveryStatus, changedAt = Date.now()) {
+  if (!["Chưa giao hàng", "Đã giao hàng", "Đã huỷ đơn"].includes(deliveryStatus)) {
+    throw new Error("Chọn trạng thái giao hàng hợp lệ.");
+  }
+  const order = getOrder(state, orderId);
+  if (!isOrphanInTransitOrder(state, order, userId)) {
+    throw new Error("Đơn không còn là đơn đang giao ngoài phiên của shipper này.");
+  }
+  return updateOrder(state, orderId, current => ({
+    ...current,
+    deliveryStatus,
+    sessionId: null,
+    ...(deliveryStatus === "Đã giao hàng"
+      ? { deliveredAt: changedAt }
+      : { deliveryMethod: null, deliveredAt: null })
+  }));
+}
+
 export function missingCriticalOrderFields(order) {
   const raw = order?.raw && typeof order.raw === "object" ? order.raw : null;
   const amount = raw

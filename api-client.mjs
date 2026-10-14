@@ -21,7 +21,10 @@ export async function apiRequest(path, options = {}) {
     const payload = response.status === 204 ? {} : await response.json().catch(() => ({}));
     if (!response.ok) {
       const problem = payload.error || {};
-      throw new ApiError(problem.message || "Không thể hoàn tất thao tác. Dữ liệu trên thiết bị vẫn được giữ.", response.status, problem.code || "API_ERROR", payload);
+      const error = new ApiError(problem.message || "Không thể hoàn tất thao tác. Dữ liệu trên thiết bị vẫn được giữ.", response.status, problem.code || "API_ERROR", payload);
+      const retryAfter = Number(response.headers.get("retry-after"));
+      if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterMs = retryAfter * 1000;
+      throw error;
     }
     return payload;
   } catch (error) {

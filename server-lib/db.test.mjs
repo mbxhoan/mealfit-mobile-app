@@ -35,9 +35,10 @@ test("withAdvisoryLock rolls back and releases the database connection when work
   t.mock.method(Pool.prototype, "end", async () => calls.push("end"));
 
   try {
-    await assert.rejects(withAdvisoryLock(772_024_101, async () => { calls.push("work"); throw Error("failed"); }), /failed/);
+    await assert.rejects(withAdvisoryLock(772_024_101, async () => { calls.push("work"); throw Error("failed"); }, 20_000), /failed/);
     assert.deepEqual(calls, [
       ["BEGIN", undefined],
+      ["SELECT set_config('lock_timeout', $1, true)", ["20000ms"]],
       ["SELECT pg_advisory_xact_lock($1)", [772_024_101]],
       "work",
       ["ROLLBACK", undefined],

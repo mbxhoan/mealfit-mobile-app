@@ -9,6 +9,7 @@ import {
   deleteSession,
   dueAmount,
   getSessionStats,
+  isAssignedPendingOrder,
   isEdgeBackSwipe,
   missingCriticalOrderFields,
   markDelivered,
@@ -40,6 +41,15 @@ const seed = () => ({
 
 const order = (state, id) => state.orders.find(item => item.id === id);
 const session = state => state.sessions[0];
+
+test("shipper route selection only allows assigned, not-yet-delivered orders", () => {
+  const assignedPending = { assignedUserId: "hieu", deliveryStatus: "Chưa giao hàng" };
+  assert.equal(isAssignedPendingOrder(assignedPending, "hieu"), true);
+  assert.equal(isAssignedPendingOrder({ ...assignedPending, assignedUserId: null }, "hieu"), false);
+  assert.equal(isAssignedPendingOrder({ ...assignedPending, assignedUserId: "hoan" }, "hieu"), false);
+  assert.equal(isAssignedPendingOrder({ ...assignedPending, deliveryStatus: "Đang giao hàng" }, "hieu"), false);
+  assert.equal(isAssignedPendingOrder(assignedPending, null), false);
+});
 
 test("missing critical order fields warn without blocking route creation", () => {
   const incomplete = {

@@ -90,7 +90,7 @@ export function handler(fn) {
       failure = error;
       const cause = error?.cause?.sourceError?.cause || error?.cause?.sourceError || error?.cause;
       console.error(JSON.stringify({ traceId, path: pathname, code: error?.code || "INTERNAL", name: error?.name || "Error", causeCode: cause?.code || null, causeMessage: String(cause?.message || "").slice(0, 300) || null }));
-      if (!res.headersSent) send(res, status, { error: { code: error?.code || "INTERNAL", message, traceId } });
+      if (!res.headersSent) send(res, status, { error: { code: error?.code || "INTERNAL", message, traceId } }, Number(error?.retryAfterSeconds) > 0 ? { "retry-after": String(Math.ceil(error.retryAfterSeconds)) } : {});
       else res.end();
     } finally {
       scheduleLog();

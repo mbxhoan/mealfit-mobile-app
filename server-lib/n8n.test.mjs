@@ -38,6 +38,91 @@ test("n8n authorization failures identify the webhook HTTP status", async t => {
   });
 });
 
+test("all webhook calls share a serialized queue with a minimum start interval", async t => {
+  const original = {
+    fetch: globalThis.fetch,
+    base: process.env.N8N_BASE_URL,
+    key: process.env.N8N_API_KEY,
+    vercel: process.env.VERCEL,
+    vercelEnv: process.env.VERCEL_ENV
+  };
+  t.after(() => {
+    globalThis.fetch = original.fetch;
+    for (const [key, value] of [["N8N_BASE_URL", original.base], ["N8N_API_KEY", original.key], ["VERCEL", original.vercel], ["VERCEL_ENV", original.vercelEnv]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  process.env.N8N_BASE_URL = "https://example.test/webhook";
+  process.env.N8N_API_KEY = "test-only-secret";
+  delete process.env.VERCEL;
+  delete process.env.VERCEL_ENV;
+  let active = 0;
+  let maxActive = 0;
+  const started = [];
+  globalThis.fetch = async () => {
+    active++;
+    maxActive = Math.max(maxActive, active);
+    started.push(Date.now());
+    await new Promise(resolve => setTimeout(resolve, 20));
+    active--;
+    return Response.json({ ok: true });
+  };
+
+  await Promise.all([n8nRequest("shipping-orders"), n8nRequest("shipping-order?code=DH1")]);
+  assert.equal(maxActive, 1);
+  assert.ok(started[1] - started[0] >= 1_000, `requests started only ${started[1] - started[0]}ms apart`);
+});
+
+test("webhook automatic retries stop after three attempts", async t => {
+  const original = {
+    fetch: globalThis.fetch,
+    base: process.env.N8N_BASE_URL,
+    key: process.env.N8N_API_KEY,
+    vercel: process.env.VERCEL,
+    vercelEnv: process.env.VERCEL_ENV
+  };
+  t.after(() => {
+    globalThis.fetch = original.fetch;
+    for (const [key, value] of [["N8N_BASE_URL", original.base], ["N8N_API_KEY", original.key], ["VERCEL", original.vercel], ["VERCEL_ENV", original.vercelEnv]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  process.env.N8N_BASE_URL = "https://example.test/webhook";
+  process.env.N8N_API_KEY = "test-only-secret";
+  delete process.env.VERCEL;
+  delete process.env.VERCEL_ENV;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response("busy", { status: 503, headers: { "retry-after": "0" } }); };
+
+  await assert.rejects(n8nRequest("shipping-orders"), error => error.upstreamStatus === 503);
+  assert.equal(calls, 3);
+});
+
+test("long webhook Retry-After reaches the caller without an automatic retry", async t => {
+  const original = {
+    fetch: globalThis.fetch,
+    base: process.env.N8N_BASE_URL,
+    key: process.env.N8N_API_KEY,
+    vercel: process.env.VERCEL,
+    vercelEnv: process.env.VERCEL_ENV
+  };
+  t.after(() => {
+    globalThis.fetch = original.fetch;
+    for (const [key, value] of [["N8N_BASE_URL", original.base], ["N8N_API_KEY", original.key], ["VERCEL", original.vercel], ["VERCEL_ENV", original.vercelEnv]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  process.env.N8N_BASE_URL = "https://example.test/webhook";
+  process.env.N8N_API_KEY = "test-only-secret";
+  delete process.env.VERCEL;
+  delete process.env.VERCEL_ENV;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response("busy", { status: 429, headers: { "retry-after": "60" } }); };
+
+  await assert.rejects(n8nRequest("log", { method: "POST" }), error => error.retryAfterSeconds === 60);
+  assert.equal(calls, 1);
+});
+
 test("shipping-orders accepts n8n's total/data response and preserves all returned rows", async t => {
   const originalFetch = globalThis.fetch;
   const originalBase = process.env.N8N_BASE_URL;

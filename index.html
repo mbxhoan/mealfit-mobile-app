@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app"><main class="startup-splash" role="status" aria-live="polite"><img src="/logo-transparent.png" alt="Mealfit"/><span class="spinner" aria-hidden="true"></span><strong>Đang mở Mealfit</strong><small>Đang khôi phục dữ liệu trên thiết bị</small></main></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script type="module" src="./app.js"></script>
     <script>if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));</script>

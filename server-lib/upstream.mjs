@@ -16,16 +16,8 @@ export async function queueUpstream(client, operationId, order, revision) {
   );
 }
 
-async function waitForShippingOrderSlot(client) {
-  const last = await client.query("SELECT updated_at FROM mealfit_sync_meta WHERE key = 'shipping-order-last-push'");
-  const elapsedMs = Date.now() - new Date(last.rows[0]?.updated_at || 0).getTime();
-  if (Number.isFinite(elapsedMs) && elapsedMs < 1100) await new Promise(resolve => setTimeout(resolve, 1100 - elapsedMs));
-  await client.query(`INSERT INTO mealfit_sync_meta (key, value, updated_at) VALUES ('shipping-order-last-push', '{}'::jsonb, clock_timestamp())
-    ON CONFLICT (key) DO UPDATE SET updated_at = EXCLUDED.updated_at`);
-}
-
 export async function flushUpstream(batchSize = 20) {
-  return withAdvisoryLock(772_024_101, async lockClient => {
+  return withAdvisoryLock(772_024_101, async () => {
     await getSql()`UPDATE mealfit_upstream_outbox SET status = 'failed', last_error = 'WORKER_INTERRUPTED', next_attempt_at = now(), updated_at = now()
       WHERE status = 'sending' AND updated_at < now() - interval '2 minutes'`;
     let sent = 0;
@@ -54,8 +46,6 @@ export async function flushUpstream(batchSize = 20) {
       if (!batch.length) break;
       for (const row of batch) {
         try {
-          // Keep Sheets reads triggered by the webhook below one request per second.
-          await waitForShippingOrderSlot(lockClient);
           const result = await pushSheetOrder(row.request_body, row.operation_id);
           const sourceRevision = Number(result.revision ?? result.data?.revision);
           if (!Number.isSafeInteger(sourceRevision) || sourceRevision <= Number(row.request_body.expected_revision)) throw new Error("n8n did not confirm the Sheet revision");

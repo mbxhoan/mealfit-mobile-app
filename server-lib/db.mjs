@@ -10,8 +10,9 @@ export function getSql() {
   return neon(databaseUrl());
 }
 
-export async function withAdvisoryLock(lockId, callback) {
+export async function withAdvisoryLock(lockId, callback, lockTimeoutMs = 0) {
   return withTransaction(async client => {
+    if (lockTimeoutMs > 0) await client.query("SELECT set_config('lock_timeout', $1, true)", [`${lockTimeoutMs}ms`]);
     await client.query("SELECT pg_advisory_xact_lock($1)", [lockId]);
     return callback(client);
   });

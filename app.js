@@ -7,6 +7,8 @@ import {
   deleteSession,
   dueAmount,
   getSessionStats,
+  isAssignedPendingOrder,
+  isOrphanInTransitOrder,
   isEdgeBackSwipe,
   missingCriticalOrderFields,
   markDelivered,
@@ -16,6 +18,7 @@ import {
   pauseSession,
   removeOrderFromSession,
   reorderOrderInSession,
+  resolveOrphanDelivery,
   reopenDeliveredOrder,
   resumeSession,
   setOrderNote,
@@ -32,7 +35,7 @@ import {
   ackAppLog, ackOutbox, commitState, deletePhoto as deleteLocalPhoto, enqueueAppLog, failAppLog, failOutbox, getMeta, getOutbox,
   getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
   nextAppLog,
-  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, writeStateSnapshot, claimFirstInstallSync
+  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, claimFirstInstallSync
 } from "./local-store.mjs";
 
 const defaultAccounts = [
@@ -49,6 +52,8 @@ let role = null;
 let user = null;
 let viewStack = [{ name: "login" }];
 let orderFilter = "Tất cả";
+let orderListLimit = 50;
+let routeSelectionLimit = 50;
 let sessionTab = "route";
 let selectedOrderId = null;
 let selectedPayment = null;
@@ -62,6 +67,7 @@ let edgeTouch = null;
 let routeDrag = null;
 let routeDragFrame = null;
 let toastTimer = null;
+let retryCountdownTimer = null;
 let networkProbeTimer = null;
 let syncRunning = false;
 let appLogRunning = false;
@@ -80,6 +86,9 @@ let activityCursor = "";
 let activityHasMore = false;
 let activityLoading = false;
 let activityError = "";
+let appInitialized = false;
+let webhookRetryFailures = 0;
+let webhookRetryAt = 0;
 let webcam = null;
 const photoUrls = new Map();
 let hydratedOrderId = null;
@@ -227,7 +236,10 @@ function appShell(content, { title = "", back = false } = {}) {
   const detailOrderId = currentView()?.name === "order" ? currentView().orderId : "";
   const syncing = syncRunning || sheetSyncRunning || Boolean(orderSyncRunningId);
   const tools = `${networkIndicator()}<button class="icon-button" data-action="${detailOrderId ? "refresh-order" : "refresh"}" data-id="${safe(detailOrderId)}" aria-label="${syncing ? "Đang đồng bộ đơn hàng" : detailOrderId ? `Đồng bộ đơn ${safe(detailOrderId)}` : "Đồng bộ đơn hàng"}" ${syncing ? "disabled" : ""}>${syncing ? '<span class="spinner" aria-hidden="true"></span>' : icon("refresh")}</button><button class="role-chip" data-action="logout" aria-label="Đổi tài khoản hoặc đăng xuất">${safe(user?.name || "")}</button>`;
-  return `<div class="app-shell"><header class="topbar">${left}<img class="topbar-brand" src="/logo-transparent.png" alt="Mealfit"/><div class="topbar-tools">${tools}</div></header>${content}</div>${renderModal()}`;
+  const loading = syncRunning || sheetSyncRunning || Boolean(orderSyncRunningId) || photoSyncRunning;
+  const loadingLabel = sheetSyncRunning ? "Đang chờ lượt đồng bộ danh sách đơn…" : orderSyncRunningId ? `Đang tải đơn ${safe(orderSyncRunningId)}…` : photoSyncRunning ? "Đang gửi ảnh xác nhận…" : "Đang đồng bộ thay đổi…";
+  const loadingBanner = loading && currentView()?.name !== "home" ? `<div class="request-loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>${loadingLabel}</span><i aria-hidden="true"></i></div>` : "";
+  return `<div class="app-shell"><header class="topbar">${left}<img class="topbar-brand" src="/logo-transparent.png" alt="Mealfit"/><div class="topbar-tools">${tools}</div></header>${loadingBanner}${content}</div>${renderModal()}`;
 }
 
 function loginScreen() {
@@ -355,9 +367,11 @@ function ordersScreen() {
   const filters = ["Tất cả", "Chưa giao hàng", "Đang giao hàng", "Đã giao hàng", "Đã huỷ đơn"];
   const visibleOrders = state.orders.filter(canSeeOrder);
   const orders = orderFilter === "Tất cả" ? visibleOrders : visibleOrders.filter(order => order.deliveryStatus === orderFilter);
+  const shownOrders = orders.slice(0, orderListLimit);
   return `<main class="page">
     <div class="filter-row">${filters.map(filter => `<button class="filter-chip ${orderFilter === filter ? "active" : ""}" data-action="filter-orders" data-filter="${safe(filter)}">${safe(filter)}</button>`).join("")}</div>
-    <div class="list">${orders.length ? orders.map(order => orderCard(order)).join("") : '<div class="empty-state"><strong>Chưa có đơn trong mục này</strong>Đơn hàng sẽ xuất hiện tại đây khi có dữ liệu.</div>'}</div>
+    <div class="list">${shownOrders.length ? shownOrders.map(order => orderCard(order)).join("") : '<div class="empty-state"><strong>Chưa có đơn trong mục này</strong>Đơn hàng sẽ xuất hiện tại đây khi có dữ liệu.</div>'}</div>
+    ${orders.length > shownOrders.length ? `<button class="button secondary full list-more" data-action="load-more-orders">Tải thêm ${Math.min(50, orders.length - shownOrders.length)} đơn · còn ${orders.length - shownOrders.length}</button>` : ""}
   </main>`;
 }
 
@@ -375,7 +389,7 @@ function paymentSummary(order) {
 function photoSection(order, locked = false) {
   return `<details class="photo-disclosure" open><summary>Ảnh xác nhận <span data-photo-count>…/5</span></summary><div class="photo-content">
     <p class="fine-print">Tối đa 5 ảnh, mỗi ảnh tối đa 15 MB.</p>
-    <div class="photo-grid" data-photo-order="${safe(order.id)}"><span class="fine-print">Đang tải ảnh…</span></div>
+    <div class="photo-grid" data-photo-order="${safe(order.id)}"><span class="photo-loading" role="status"><i></i><i></i><small>Đang tải ảnh…</small></span></div>
     <div class="photo-tools"><button class="button secondary small" data-action="choose-photo" data-source="camera" ${locked ? "disabled" : ""}>${icon("camera", 18)} Chụp ảnh</button><button class="button secondary small" data-action="choose-photo" data-source="upload" ${locked ? "disabled" : ""}>${icon("upload", 18)} Tải ảnh</button></div>
     ${locked ? '<p class="fine-print">Tiếp tục phiên để thay đổi ảnh.</p>' : ""}
     <input class="hidden-input" id="camera-input" type="file" accept="image/*" capture="environment" data-photo-kind="proof" ${locked ? "disabled" : ""} />
@@ -445,7 +459,15 @@ function singleDeliveryScreen() {
 }
 
 function orderSelectionButton(order, selected, action) {
-  return `<button class="select-order ${selected ? "selected" : ""}" aria-pressed="${selected}" data-action="${action}" data-id="${safe(order.id)}"><span class="checkmark" aria-hidden="true"></span><span class="selection-copy"><span class="selection-card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(order.paymentStatus || (dueAmount(order) ? "Chưa thanh toán" : "Đã thanh toán"), "payment")}</span><span class="selection-customer-line"><span class="order-customer">${safe(order.customer)}</span><strong class="selection-price">${money(order.total)}</strong></span><span class="order-address">${addressLabel(order.address)}</span>${customerNoteLine(order)}<span class="order-subline">${(order.items || []).length} dòng</span>${orderWarning(order)}</span></button>`;
+  const itemCount = order.items?.length || 0;
+  return `<button class="select-order ${selected ? "selected" : ""}" aria-pressed="${selected}" data-action="${action}" data-id="${safe(order.id)}"><span class="checkmark" aria-hidden="true"></span><span class="selection-copy"><span class="selection-card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(order.paymentStatus || (dueAmount(order) ? "Chưa thanh toán" : "Đã thanh toán"), "payment")}</span><span class="selection-customer-line"><span class="order-customer">${safe(order.customer)}</span><strong class="selection-price">${money(order.total)}</strong></span><span class="order-address">${addressLabel(order.address)}</span>${customerNoteLine(order)}<span class="order-subline">${itemCount ? `${itemCount} sản phẩm` : "Chưa có chi tiết sản phẩm"}</span>${orderWarning(order)}</span></button>`;
+}
+
+function orphanDeliveryPanel() {
+  if (role !== "shipper") return "";
+  const orders = state.orders.filter(order => isOrphanInTransitOrder(state, order, user?.id));
+  if (!orders.length) return "";
+  return `<section class="orphan-recovery"><div class="orphan-recovery-heading"><h2>Đơn đang giao ngoài lộ trình</h2><p>${orders.length} đơn đang gán cho bạn nhưng chưa thuộc phiên nào.</p></div><div class="orphan-recovery-list">${orders.map(order => `<article class="orphan-order-card"><div class="orphan-order-summary"><strong>${safe(order.id)} · ${safe(order.customer || "Chưa có tên khách")}</strong><span>${money(order.total)} · ${safe(order.address || "Chưa có địa chỉ")}</span></div><div class="orphan-order-actions"><button class="button secondary small" data-action="choose-orphan-status" data-id="${safe(order.id)}" data-status="Chưa giao hàng">Trả về đơn chờ</button><button class="button small" data-action="choose-orphan-status" data-id="${safe(order.id)}" data-status="Đã giao hàng">Đã giao · bỏ qua</button><button class="button danger small" data-action="choose-orphan-status" data-id="${safe(order.id)}" data-status="Đã huỷ đơn">Hủy đơn</button></div></article>`).join("")}</div></section>`;
 }
 
 function selectionNoteEditor(flow, order) {
@@ -471,14 +493,19 @@ function updateSelectionDetailsStatus(details) {
 function sessionCreateScreen() {
   if (role !== "shipper") return `<main class="page"><div class="empty-state">Phiên giao hàng dành cho shipper.</div></main>`;
   if (activeSession()) return sessionScreen();
-  const pending = state.orders.filter(order => canSeeOrder(order) && order.deliveryStatus === "Chưa giao hàng");
-  const selectedIds = window._sessionSelection || [];
+  const pending = state.orders.filter(order => isAssignedPendingOrder(order, user?.id));
+  const eligibleIds = new Set(pending.map(order => order.id));
+  const selectedIds = (window._sessionSelection || []).filter(id => eligibleIds.has(id));
+  window._sessionSelection = selectedIds;
+  const shownOrders = pending.slice(0, routeSelectionLimit);
   return `<main class="page">
     ${selectionDefaultShift("default-shift", "Ca mặc định", sessionDefaultShift)}
-    <div class="list">${pending.map(order => {
+    ${orphanDeliveryPanel()}
+    <div class="list">${shownOrders.map(order => {
       const selected = selectedIds.includes(order.id);
-      return `<div class="list-card shift-selection-row">${orderSelectionButton(order, selected, "toggle-session-order")}${selected ? selectionNoteEditor("session", order) : ""}</div>`;
+      return `<div class="list-card shift-selection-row ${selected ? "selected" : ""}">${orderSelectionButton(order, selected, "toggle-session-order")}${selected ? selectionNoteEditor("session", order) : ""}</div>`;
     }).join("") || '<div class="empty-state">Không có đơn để giao.</div>'}</div>
+    ${pending.length > shownOrders.length ? `<button class="button secondary full list-more" data-action="load-more-route-orders">Tải thêm ${Math.min(50, pending.length - shownOrders.length)} đơn · còn ${pending.length - shownOrders.length}</button>` : ""}
     <div class="bottom-actions single"><div class="selection-count">Đã chọn ${selectedIds.length} đơn</div><button class="button" data-action="create-session" ${selectedIds.length ? "" : "disabled"}>Tạo phiên</button></div>
   </main>`;
 }
@@ -494,7 +521,7 @@ function sessionScreen() {
   if (!session) {
     if (isStaff()) return staffSessionsScreen();
     const history = [...state.sessions].sort((a, b) => (b.startedAt || b.createdAt || 0) - (a.startedAt || a.createdAt || 0));
-    return `<main class="page"><button class="button full" data-action="new-session">Tạo phiên giao hàng ${icon("chevron", 18)}</button>
+    return `<main class="page">${orphanDeliveryPanel()}<button class="button full" data-action="new-session">Tạo phiên giao hàng ${icon("chevron", 18)}</button>
       <h2 class="section-title">Phiên gần đây <small>${history.length}</small></h2><div class="list">${history.map(item => `<button class="list-card clickable" data-action="open-session-history" data-id="${safe(item.id)}"><div class="card-top"><span class="order-number">${dateLabel(item.startedAt || item.createdAt)} ${item.startedAt ? `· ${timeLabel(item.startedAt)}` : ""}</span>${sessionBadge(item.status)}</div><p class="order-customer">${item.orderIds.length} điểm giao</p><p class="order-address">${item.orderIds.map(orderId => safe(orderById(orderId)?.customer || orderId)).join(" · ")}</p></button>`).join("") || '<div class="empty-state">Chưa có phiên giao hàng.</div>'}</div>
     </main>`;
   }
@@ -555,7 +582,7 @@ function sessionScreen() {
     return `<section class="shift-group"><div class="shift-heading">${label}</div>${doneOrders.length ? `<details class="completed-stops"><summary><span>${icon("check", 13)} Đã giao ${doneOrders.length} đơn</span><small>Xem lại</small></summary><div class="${kind}-done-list">${doneOrders.map(order => renderCard(order, session.orderIds.indexOf(order.id))).join("")}</div></details>` : ""}<div class="${kind}-stop-list" data-route-shift="${safe(group.shift)}">${pendingOrders.map(order => renderCard(order, session.orderIds.indexOf(order.id))).join("")}</div></section>`;
   }).join("");
   const continueButton = delivering && current ? `<button class="button secondary full continue-route" data-action="continue-route" hidden>${icon("route", 17)} Tiếp tục giao</button>` : "";
-  return `<main class="page route-page"><div class="session-meta"><span>${safe(session.id)} · ${dateLabel(session.startedAt || session.createdAt)}</span>${sessionBadge(session.status)}</div>
+  return `<main class="page route-page">${orphanDeliveryPanel()}<div class="session-meta"><span>${safe(session.id)} · ${dateLabel(session.startedAt || session.createdAt)}</span>${sessionBadge(session.status)}</div>
     <div class="route-progress"><strong>${completed} / ${orders.length} điểm</strong><div class="shift-summary-list">${stats.shifts.map(item => `<span class="shift-summary ${item.done ? "done" : ""}">${item.done ? icon("check", 13) : ""}${item.shift} ${item.completed}/${item.total}</span>`).join("")}${unassigned ? `<span class="shift-summary">Chưa phân ca ${unassigned}</span>` : ""}</div></div>
     <div class="route-stats">${session.startedAt ? `<div><span>Tiền mặt</span><strong>${money(stats.cashCollected)}</strong></div><div><span>Chuyển khoản</span><strong>${money(stats.transferCollected)}</strong></div><div><span>Còn giao</span><strong>${stats.remainingCount}</strong></div><div><span>Tổng tuyến</span><strong>${money(stats.totalValue)}</strong></div>` : `<div><span>Tổng cần thu</span><strong>${money(stats.amountToCollect)}</strong></div><div><span>Tổng tuyến</span><strong>${money(stats.totalValue)}</strong></div>`}</div>
     ${continueButton}${controls}${deleteSessionButton}
@@ -569,14 +596,19 @@ function sessionScreen() {
 function addOrdersScreen() {
   const session = activeSession();
   if (role !== "shipper" || !session || !["active", "notStarted"].includes(session.status)) return `<main class="page"><div class="empty-state">Tiếp tục phiên trước khi thêm đơn.</div></main>`;
-  const pending = state.orders.filter(order => order.deliveryStatus === "Chưa giao hàng");
-  const selectedIds = window._addSelection || [];
+  const pending = state.orders.filter(order => isAssignedPendingOrder(order, user?.id));
+  const eligibleIds = new Set(pending.map(order => order.id));
+  const selectedIds = (window._addSelection || []).filter(id => eligibleIds.has(id));
+  window._addSelection = selectedIds;
+  const shownOrders = pending.slice(0, routeSelectionLimit);
   return `<main class="page">
     ${selectionDefaultShift("add-shift", "Ca giao", addOrdersShift)}
-    <div class="list">${pending.map(order => {
+    ${orphanDeliveryPanel()}
+    <div class="list">${shownOrders.map(order => {
       const selected = selectedIds.includes(order.id);
-      return `<div class="list-card shift-selection-row">${orderSelectionButton(order, selected, "toggle-add-order")}${selected ? selectionNoteEditor("add", order) : ""}</div>`;
+      return `<div class="list-card shift-selection-row ${selected ? "selected" : ""}">${orderSelectionButton(order, selected, "toggle-add-order")}${selected ? selectionNoteEditor("add", order) : ""}</div>`;
     }).join("") || '<div class="empty-state">Không có đơn chưa giao để thêm.</div>'}</div>
+    ${pending.length > shownOrders.length ? `<button class="button secondary full list-more" data-action="load-more-route-orders">Tải thêm ${Math.min(50, pending.length - shownOrders.length)} đơn · còn ${pending.length - shownOrders.length}</button>` : ""}
     <div class="bottom-actions single"><div class="selection-count">Đã chọn ${selectedIds.length} đơn</div><button class="button" data-action="confirm-add-orders" ${selectedIds.length ? "" : "disabled"}>Thêm vào tuyến</button></div>
   </main>`;
 }
@@ -608,6 +640,17 @@ function renderModal() {
     if (!order) return "";
     return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Đơn hàng chưa thanh toán</h2><p>Cần thu ${money(dueAmount(order))} bằng tiền mặt hoặc chuyển khoản. Xác nhận giao đơn khi còn khoản phải thu?</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Quay lại</button><button class="button" data-action="confirm-delivery-unpaid">Đã giao, còn phải thu</button></div></section></div>`;
   }
+  if (modal.type === "orphan-delivery") {
+    const order = orderById(modal.orderId);
+    if (!order || !isOrphanInTransitOrder(state, order, user?.id)) return "";
+    const details = {
+      "Chưa giao hàng": ["Trả đơn về danh sách chờ?", "Đơn sẽ được phép chọn vào lộ trình mới."],
+      "Đã giao hàng": ["Đánh dấu đơn đã giao?", "Đơn sẽ được chuyển sang Đã giao hàng để bỏ qua."],
+      "Đã huỷ đơn": ["Hủy đơn này?", "Đơn sẽ được chuyển sang trạng thái Đã huỷ đơn."]
+    }[modal.status];
+    if (!details) return "";
+    return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">${details[0]}</h2><p>${safe(order.id)} · ${safe(order.customer)}. ${details[1]}</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Quay lại</button><button class="button ${modal.status === "Đã huỷ đơn" ? "danger" : ""}" data-action="confirm-orphan-status">Xác nhận</button></div></section></div>`;
+  }
   if (modal.type === "remove-stop") {
     const order = orderById(modal.orderId);
     return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Bỏ đơn khỏi phiên?</h2><p>${safe(order?.id)} sẽ trở về danh sách “Chưa giao hàng”.</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Giữ lại</button><button class="button danger" data-action="confirm-remove-stop">Bỏ khỏi phiên</button></div></section></div>`;
@@ -628,13 +671,21 @@ function renderModal() {
     if (!order) return "";
     return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Sửa trạng thái ${safe(order.id)}</h2><p>Thanh toán và ảnh xác nhận sẽ được giữ lại.</p><div class="form-field"><label for="reopen-shift">Ca giao lại</label><select class="select" id="reopen-shift">${SHIFT_OPTIONS.map(shift => `<option ${shift === (modal.shift || "Sáng") ? "selected" : ""}>${shift}</option>`).join("")}</select></div><div class="modal-actions"><button class="button secondary" data-action="confirm-reopen-order" data-status="Chưa giao hàng">Chưa giao</button><button class="button" data-action="confirm-reopen-order" data-status="Đang giao hàng">Đang giao</button></div></section></div>`;
   }
-  if (modal.type === "error") return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Chưa hoàn tất</h2><p>${safe(modal.message)}</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="retry-sync">Thử lại</button></div></section></div>`;
+  if (modal.type === "error") {
+    const retrySeconds = Math.max(0, Math.ceil(((modal.retryAt || 0) - Date.now()) / 1000));
+    return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Chưa hoàn tất</h2><p>${safe(modal.message)}</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="retry-sync" ${retrySeconds ? "disabled" : ""}>${retrySeconds ? `Chờ ${retrySeconds} giây` : "Thử lại"}</button></div></section></div>`;
+  }
   if (modal.type === "camera") return `<div class="modal-backdrop"><section class="modal camera-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Chụp ảnh đơn hàng</h2><video id="camera-video" autoplay playsinline></video><canvas id="camera-canvas" class="hidden-input"></canvas><p class="fine-print" data-camera-message>Đang mở camera…</p><div class="modal-actions"><button class="button secondary" data-action="close-camera">Đóng</button><button class="button" data-action="capture-photo" disabled>Chụp ảnh</button></div></section></div>`;
   if (modal.type === "conflicts") return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Xung đột đồng bộ</h2><p>${safe(modal.message || "Chọn dữ liệu cần giữ cho từng đơn.")}</p>${(modal.items || []).map(item => `<div class="conflict-row"><strong>${safe(item.orderCode)}</strong><div class="modal-actions"><button class="button secondary" data-action="resolve-conflict" data-id="${safe(item.conflictId)}" data-choice="sheet">Giữ Sheet</button><button class="button" data-action="resolve-conflict" data-id="${safe(item.conflictId)}" data-choice="app">Giữ ứng dụng</button></div></div>`).join("") || '<p>Không còn xung đột cần xử lý.</p>'}<div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="retry-sync">Làm mới</button></div></section></div>`;
   return "";
 }
 
 function render() {
+  if (routeDrag) cancelRouteDrag();
+  if (!appInitialized) {
+    app.innerHTML = startupScreen();
+    return;
+  }
   const view = currentView();
   if (!role || view.name === "login") {
     hydratedOrderId = null;
@@ -693,7 +744,7 @@ function back() {
 }
 
 window.addEventListener("touchstart", event => {
-  if (event.touches.length !== 1 || event.target.closest("input, textarea, select, [contenteditable='true']")) {
+  if (routeDrag || event.touches.length !== 1 || event.target.closest("input, textarea, select, [contenteditable='true'], [data-drag-order]")) {
     edgeTouch = null;
     return;
   }
@@ -737,11 +788,52 @@ function flash(message) {
   toastTimer = setTimeout(() => toast.classList.remove("show"), 2600);
 }
 
+function startupScreen() {
+  return `<main class="startup-splash" role="status" aria-live="polite"><img src="/logo-transparent.png" alt="Mealfit"/><span class="spinner" aria-hidden="true"></span><strong>Đang mở Mealfit</strong><small>Đang khôi phục dữ liệu trên thiết bị</small></main>`;
+}
+
 function cloneState(value) { return JSON.parse(JSON.stringify(value)); }
 
-function showError(message) {
-  modal = { type: "error", message: String(message || "Không thể hoàn tất thao tác.") };
+function showError(error) {
+  clearInterval(retryCountdownTimer);
+  const message = typeof error === "string" ? error : error?.message;
+  const retryAfterMs = Math.max(0, Number(error?.retryAfterMs) || Number(error?.retryAfterSeconds) * 1000 || 0);
+  modal = { type: "error", message: String(message || "Không thể hoàn tất thao tác."), retryAt: retryAfterMs ? Date.now() + retryAfterMs : 0 };
   render();
+  if (retryAfterMs) {
+    retryCountdownTimer = setInterval(() => {
+      const button = document.querySelector('[data-action="retry-sync"]');
+      if (!modal || modal.type !== "error" || !button) { clearInterval(retryCountdownTimer); retryCountdownTimer = null; return; }
+      const seconds = Math.max(0, Math.ceil((modal.retryAt - Date.now()) / 1000));
+      button.disabled = seconds > 0;
+      button.textContent = seconds ? `Chờ ${seconds} giây` : "Thử lại";
+      if (!seconds) { clearInterval(retryCountdownTimer); retryCountdownTimer = null; }
+    }, 1000);
+  }
+}
+
+function assertWebhookRetryAllowed() {
+  const waitMs = webhookRetryAt - Date.now();
+  if (waitMs <= 0) return;
+  const seconds = Math.ceil(waitMs / 1000);
+  const error = new Error(`Để tránh gửi dồn yêu cầu, vui lòng chờ ${seconds} giây rồi thử lại.`);
+  error.status = 429;
+  error.retryAfterMs = waitMs;
+  throw error;
+}
+
+function applyWebhookRetryCooldown(error) {
+  if (error.status && error.status !== 429 && error.status < 500) return error;
+  webhookRetryFailures = Math.min(webhookRetryFailures + 1, 6);
+  const delayMs = Math.max(Number(error.retryAfterMs) || 0, Math.min(30_000, 1_500 * (2 ** (webhookRetryFailures - 1))));
+  webhookRetryAt = Date.now() + delayMs;
+  error.retryAfterMs = delayMs;
+  return error;
+}
+
+function resetWebhookRetryCooldown() {
+  webhookRetryFailures = 0;
+  webhookRetryAt = 0;
 }
 
 async function updateState(next, message) {
@@ -794,8 +886,8 @@ async function syncQueued() {
           else if (result) await ackOutbox(item.id, result.revision);
           else await failOutbox(item.id, error.status === 409);
         }
-        if (error.status === 409) showError(error.message);
-        else if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+        if (error.status === 409) showError(error);
+        else if (!syncErrorShown) { syncErrorShown = true; showError(error); }
         break;
       }
     }
@@ -807,7 +899,7 @@ async function syncQueued() {
       syncErrorShown = false;
     }
   } catch (error) {
-    if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+    if (!syncErrorShown) { syncErrorShown = true; showError(error); }
   } finally {
     syncRunning = false;
     render();
@@ -856,7 +948,7 @@ async function syncPendingPhotos() {
         const result = await apiRequest(`/api/media?${query}`, { method: "POST", headers: { "content-type": photo.blob.type || "image/jpeg" }, body: photo.blob, timeout: 30_000 });
         await putPhoto({ ...photo, syncState: result.status === "sent" ? "synced" : "pending", syncedAt: result.status === "sent" ? Date.now() : null });
       } catch (error) {
-        if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+        if (!syncErrorShown) { syncErrorShown = true; showError(error); }
         break;
       }
     }
@@ -880,6 +972,7 @@ async function syncPendingMediaDeletes() {
 async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   if (!user) return;
   if (!navigator.onLine) throw new Error("Cần kết nối mạng để đồng bộ danh sách đơn hàng.");
+  if (sheet) assertWebhookRetryAllowed();
   if (sheet && sheetSyncRunning) return;
   if (sheet) { sheetSyncRunning = true; render(); }
   try {
@@ -905,7 +998,11 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
     }
     lastSyncAt = Date.now();
     await setMeta(`lastSync:${user.id}`, lastSyncAt);
+    if (sheet) resetWebhookRetryCooldown();
     render();
+  } catch (error) {
+    if (sheet) throw applyWebhookRetryCooldown(error);
+    throw error;
   } finally {
     if (sheet) { sheetSyncRunning = false; render(); }
   }
@@ -929,16 +1026,22 @@ async function pullChanges() {
     render();
   } catch (error) {
     if (error.status === 401) void logout();
-    else if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+    else if (!syncErrorShown) { syncErrorShown = true; showError(error); }
   }
 }
 
 async function syncOrderDetail(orderId) {
   if (!navigator.onLine || !user) throw new Error("Cần kết nối mạng để đồng bộ đơn hàng.");
-  const result = await apiRequest(`/api/orders/${encodeURIComponent(orderId)}?refresh=1`);
-  state = normalizeState(await mergeRemote({ orders: [result.data] }, user.id));
-  lastPersistedState = cloneState(state);
-  render();
+  assertWebhookRetryAllowed();
+  try {
+    const result = await apiRequest(`/api/orders/${encodeURIComponent(orderId)}?refresh=1`);
+    state = normalizeState(await mergeRemote({ orders: [result.data] }, user.id));
+    lastPersistedState = cloneState(state);
+    resetWebhookRetryCooldown();
+    render();
+  } catch (error) {
+    throw applyWebhookRetryCooldown(error);
+  }
 }
 
 function startNetworkMonitor() {
@@ -973,11 +1076,12 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
   viewStack = Array.isArray(savedStack) && savedStack.length && savedStack.every(view => validViewNames.has(view?.name))
     ? savedStack : [{ name: "home" }];
   lastSyncAt = await getMeta(`lastSync:${user.id}`) || null;
+  appInitialized = true;
   render();
   startNetworkMonitor();
   if (refresh && shouldRunFirstSync && navigator.onLine) {
     try { await pullRemoteOrders({ sheet: true }); }
-    catch (error) { showError(error.message); }
+    catch (error) { showError(error); }
   }
 }
 
@@ -1012,33 +1116,18 @@ async function initializeApp() {
         const result = await apiRequest("/api/auth/session");
         if (result.user) { await activateUser(result.user); return; }
       } catch {
-        if (cachedUserId) { await restoreOfflineUser(cachedUserId); return; }
+        if (cachedUserId && await restoreOfflineUser(cachedUserId)) return;
       }
     } else if (cachedUserId) {
-      await restoreOfflineUser(cachedUserId);
-      return;
+      if (await restoreOfflineUser(cachedUserId)) return;
     }
+    appInitialized = true;
     render();
   } catch (error) {
-    showError(error.message || "Không thể khôi phục dữ liệu trên thiết bị.");
+    appInitialized = true;
+    render();
+    showError(error || "Không thể khôi phục dữ liệu trên thiết bị.");
   }
-}
-
-async function claimUnassignedOrders(codes) {
-  const unassigned = codes.filter(code => !orderById(code)?.assignedUserId);
-  if (!unassigned.length) return state;
-  if (!navigator.onLine) throw new Error("Cần có mạng để nhận đơn chưa phân công.");
-  const result = await apiRequest("/api/claim", { method: "POST", body: { codes: unassigned } });
-  const next = cloneState(state);
-  for (const claimed of result.data || []) {
-    const order = next.orders.find(item => item.id === claimed.id);
-    if (order) Object.assign(order, { assignedUserId: claimed.assignedUserId, shipperName: claimed.shipperName, serverRevision: claimed.serverRevision });
-  }
-  await writeStateSnapshot(next, user.id);
-  state = next;
-  lastPersistedState = cloneState(next);
-  render();
-  return next;
 }
 
 function focusDragHandle(orderId) {
@@ -1079,52 +1168,104 @@ function dragRows(parent) {
   return [...parent.querySelectorAll(":scope > [data-order-id]")];
 }
 
-function placeDraggedStop(clientX, clientY) {
+function placeDraggedStop(clientY) {
   const drag = routeDrag;
-  if (!drag) return;
-  const rows = dragRows(drag.parent);
-  const movable = rows.filter(row => row.dataset.completed !== "true");
-  const first = movable[0];
-  const last = movable.at(-1);
-  if (!first || !last) return;
-  if (clientY <= first.getBoundingClientRect().top) {
-    drag.parent.insertBefore(drag.element, first);
-    return;
-  }
-  if (clientY >= last.getBoundingClientRect().bottom) {
-    drag.parent.append(drag.element);
-    return;
-  }
-  const target = document.elementFromPoint(clientX, clientY)?.closest("[data-order-id]");
-  if (!target || target.parentElement !== drag.parent || target.dataset.completed === "true" || target === drag.element) return;
-  const rect = target.getBoundingClientRect();
-  drag.parent.insertBefore(drag.element, clientY < rect.top + rect.height / 2 ? target : target.nextElementSibling);
+  if (!drag?.active) return;
+  const rows = dragRows(drag.parent).filter(row => row !== drag.element && row.dataset.completed !== "true");
+  const before = rows.find(row => {
+    const rect = row.getBoundingClientRect();
+    return clientY < rect.top + rect.height / 2;
+  });
+  if (before && drag.element.nextElementSibling !== before) drag.parent.insertBefore(drag.element, before);
+  else if (!before && drag.element.nextElementSibling) drag.parent.append(drag.element);
 }
 
-function runDragAutoScroll() {
-  if (!routeDrag) return;
-  const edge = 72;
-  const y = routeDrag.lastY;
-  const delta = y < edge ? -Math.ceil((edge - y) / 5) : y > innerHeight - edge ? Math.ceil((y - innerHeight + edge) / 5) : 0;
-  if (delta) {
-    window.scrollBy(0, delta);
-    placeDraggedStop(routeDrag.lastX, routeDrag.lastY);
-    routeDragFrame = requestAnimationFrame(runDragAutoScroll);
-  } else routeDragFrame = null;
+function routeDragInBounds(drag) {
+  const rect = drag.parent.getBoundingClientRect();
+  return drag.lastX >= rect.left - 32 && drag.lastX <= rect.right + 32
+    && drag.lastY >= rect.top - 40 && drag.lastY <= rect.bottom + 40;
+}
+
+function runRouteDragFrame() {
+  routeDragFrame = null;
+  const drag = routeDrag;
+  if (!drag?.active) return;
+  if (!drag.parent.isConnected || drag.element.parentElement !== drag.parent
+    || (drag.element.dataset.shift || "Chưa phân ca") !== drag.parent.dataset.routeShift) {
+    cancelRouteDrag();
+    return;
+  }
+  const left = Math.max(8, Math.min(drag.lastX - drag.gripOffsetX, innerWidth - drag.ghostWidth - 8));
+  const top = Math.max(8, Math.min(drag.lastY - 28, innerHeight - 76));
+  drag.ghost.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+  const edge = 80;
+  const y = drag.lastY;
+  const delta = y < edge ? -Math.min(16, Math.ceil((edge - y) / 5))
+    : y > innerHeight - edge ? Math.min(16, Math.ceil((y - innerHeight + edge) / 5)) : 0;
+  const previousScroll = window.scrollY;
+  if (delta && routeDragInBounds(drag)) window.scrollBy(0, delta);
+  if (routeDragInBounds(drag)) placeDraggedStop(y);
+  if (window.scrollY !== previousScroll) routeDragFrame = requestAnimationFrame(runRouteDragFrame);
+}
+
+function scheduleRouteDragFrame() {
+  if (!routeDragFrame) routeDragFrame = requestAnimationFrame(runRouteDragFrame);
+}
+
+function activateRouteDrag(drag) {
+  const order = orderById(drag.id);
+  const rect = drag.element.getBoundingClientRect();
+  const ghost = document.createElement("div");
+  const title = document.createElement("strong");
+  const detail = document.createElement("small");
+  title.textContent = `${order?.customer || drag.id} · ${drag.id}`;
+  detail.textContent = order ? `${order.address || "Chưa có địa chỉ"} · ${money(order.total)}` : "";
+  ghost.className = "route-drag-ghost";
+  ghost.setAttribute("aria-hidden", "true");
+  ghost.append(title, detail);
+  drag.ghostWidth = Math.min(rect.width, innerWidth - 16);
+  drag.gripOffsetX = Math.min(drag.startX - rect.left, drag.ghostWidth - 16);
+  ghost.style.width = `${drag.ghostWidth}px`;
+  document.body.append(ghost);
+  drag.ghost = ghost;
+  drag.active = true;
+  drag.element.classList.add("dragging");
+  drag.parent.classList.add("route-drag-active");
+  drag.handle.classList.add("dragging");
+  document.body.classList.add("route-dragging");
+  window.getSelection()?.removeAllRanges();
+  scheduleRouteDragFrame();
+}
+
+function cancelRouteDrag(restore = true) {
+  const drag = routeDrag;
+  if (!drag) return;
+  routeDrag = null;
+  if (routeDragFrame) cancelAnimationFrame(routeDragFrame);
+  routeDragFrame = null;
+  if (restore && drag.element.parentElement === drag.parent && drag.element.nextElementSibling !== drag.originalNext) {
+    drag.parent.insertBefore(drag.element, drag.originalNext?.parentElement === drag.parent ? drag.originalNext : null);
+  }
+  drag.ghost?.remove();
+  drag.element.classList.remove("dragging");
+  drag.parent.classList.remove("route-drag-active");
+  drag.handle.classList.remove("dragging");
+  document.body.classList.remove("route-dragging");
+  if (app.hasPointerCapture?.(drag.pointerId)) app.releasePointerCapture(drag.pointerId);
 }
 
 function beginRouteDrag(event) {
   const handle = event.target.closest("[data-drag-order]");
-  if (!handle || event.isPrimary === false || (event.button != null && event.button !== 0)) return;
+  if (routeDrag || !handle || event.isPrimary === false || (event.button != null && event.button !== 0)) return;
   const session = activeSession();
   const element = handle.closest("[data-order-id]");
   const parent = element?.parentElement;
-  if (role !== "shipper" || !session || !["notStarted", "active"].includes(session.status) || !element || element.dataset.completed === "true") return;
+  if (role !== "shipper" || !session || !["notStarted", "active"].includes(session.status) || !element || !parent?.dataset.routeShift || element.dataset.completed === "true") return;
   event.preventDefault();
-  routeDrag = { id: handle.dataset.dragOrder, handle, element, parent, pointerId: event.pointerId, lastX: event.clientX, lastY: event.clientY };
-  element.classList.add("dragging");
-  handle.classList.add("dragging");
-  handle.setPointerCapture?.(event.pointerId);
+  edgeTouch = null;
+  routeDrag = { id: handle.dataset.dragOrder, handle, element, parent, originalNext: element.nextElementSibling,
+    pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, lastX: event.clientX, lastY: event.clientY, active: false };
+  app.setPointerCapture?.(event.pointerId);
 }
 
 function updateRouteDrag(event) {
@@ -1132,18 +1273,17 @@ function updateRouteDrag(event) {
   event.preventDefault();
   routeDrag.lastX = event.clientX;
   routeDrag.lastY = event.clientY;
-  placeDraggedStop(event.clientX, event.clientY);
-  if (!routeDragFrame) routeDragFrame = requestAnimationFrame(runDragAutoScroll);
+  if (!routeDrag.active && Math.hypot(event.clientX - routeDrag.startX, event.clientY - routeDrag.startY) >= 8) activateRouteDrag(routeDrag);
+  if (routeDrag.active) scheduleRouteDragFrame();
 }
 
 async function finishRouteDrag(event, cancelled = false) {
   if (!routeDrag || event.pointerId !== routeDrag.pointerId) return;
   const drag = routeDrag;
-  routeDrag = null;
-  if (routeDragFrame) cancelAnimationFrame(routeDragFrame);
-  routeDragFrame = null;
-  drag.element.classList.remove("dragging");
-  drag.handle.classList.remove("dragging");
+  drag.lastX = event.clientX ?? drag.lastX;
+  drag.lastY = event.clientY ?? drag.lastY;
+  if (!cancelled && drag.active && routeDragInBounds(drag)) placeDraggedStop(drag.lastY);
+  const valid = !cancelled && drag.active && routeDragInBounds(drag);
   const session = activeSession();
   const rowIds = dragRows(drag.parent).map(row => row.dataset.orderId);
   const shiftSlots = session?.orderIds.map((id, index) => ({ id, index }))
@@ -1152,7 +1292,8 @@ async function finishRouteDrag(event, cancelled = false) {
   const localIndex = rowIds.indexOf(drag.id);
   const targetIndex = shiftSlots[localIndex] ?? -1;
   const originalIndex = session?.orderIds.indexOf(drag.id) ?? -1;
-  if (cancelled || targetIndex < 0 || targetIndex === originalIndex) { render(); return; }
+  cancelRouteDrag(!valid || targetIndex < 0 || targetIndex === originalIndex);
+  if (!valid || targetIndex < 0 || targetIndex === originalIndex) return;
   try {
     const next = reorderOrderInSession(state, drag.id, targetIndex);
     if (next === state) { render(); return; }
@@ -1354,14 +1495,14 @@ app.addEventListener("click", async event => {
   }
   const action = button.dataset.action;
   const id = button.dataset.id;
-  if (action === "backdrop" && event.target === button) { modal = null; render(); return; }
+  if (action === "backdrop" && event.target === button) { clearInterval(retryCountdownTimer); retryCountdownTimer = null; modal = null; render(); return; }
   if (action === "test-api") {
     if (!setButtonBusy(button, true)) return;
     try {
       const result = await apiRequest("/api/diagnostics", { method: "GET", timeout: 20_000 });
       modal = { type: "api-check", result };
       render();
-    } catch (error) { showError(error.message); }
+    } catch (error) { showError(error); }
     finally { if (button.isConnected) setButtonBusy(button, false); }
     return;
   }
@@ -1371,7 +1512,7 @@ app.addEventListener("click", async event => {
     if (syncRunning || sheetSyncRunning || orderSyncRunningId) return;
     if (!setButtonBusy(button, true)) return;
     try { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đã làm mới dữ liệu đơn hàng."); }
-    catch (error) { showError(error.message); }
+    catch (error) { showError(error); }
     finally { setButtonBusy(button, false); }
     return;
   }
@@ -1380,7 +1521,7 @@ app.addEventListener("click", async event => {
     orderSyncRunningId = id;
     render();
     try { await syncOrderDetail(id); flash(`Đã đồng bộ đơn ${id}.`); }
-    catch (error) { if (error.status === 401) void logout(); else showError(error.message); }
+    catch (error) { if (error.status === 401) void logout(); else showError(error); }
     finally { orderSyncRunningId = null; render(); }
     return;
   }
@@ -1392,7 +1533,7 @@ app.addEventListener("click", async event => {
     try {
       if (detailOrderId) { await syncOrderDetail(detailOrderId); flash(`Đã đồng bộ đơn ${detailOrderId}.`); }
       else { await syncQueued(); await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đồng bộ đã hoàn tất."); }
-    } catch (error) { if (error.status === 401) void logout(); else showError(error.message); }
+    } catch (error) { if (error.status === 401) void logout(); else showError(error); }
     finally { if (detailOrderId) { orderSyncRunningId = null; render(); } }
     return;
   }
@@ -1412,13 +1553,13 @@ app.addEventListener("click", async event => {
       modal = { type: "conflicts", items: (result.data || []).map(item => ({ ...item, conflictId: item.id, orderCode: item.code })) };
       render();
       await pullChanges();
-    } catch (error) { showError(error.message); }
+    } catch (error) { showError(error); }
     return;
   }
   if (action === "close-camera") { webcam?.stop(); webcam = null; modal = null; render(); return; }
   if (action === "capture-photo") {
     if (!setButtonBusy(button, true)) return;
-    try { await capturePhoto(); } catch (error) { showError(error.message); webcam?.stop(); webcam = null; modal = null; render(); }
+    try { await capturePhoto(); } catch (error) { showError(error); webcam?.stop(); webcam = null; modal = null; render(); }
     return;
   }
   if (action === "open-orders") { orderFilter = "Tất cả"; navigate({ name: "orders" }); return; }
@@ -1447,7 +1588,9 @@ app.addEventListener("click", async event => {
   if (action === "open-session-history") { sessionTab = "route"; navigate({ name: "session", sessionId: id }); return; }
   if (action === "open-order") { navigate({ name: "order", orderId: id, fromSession: false }); return; }
   if (action === "open-order-session") { navigate({ name: "order", orderId: id, fromSession: true }); return; }
-  if (action === "filter-orders") { orderFilter = button.dataset.filter; render(); return; }
+  if (action === "filter-orders") { orderFilter = button.dataset.filter; orderListLimit = 50; render(); return; }
+  if (action === "load-more-orders") { orderListLimit += 50; render(); return; }
+  if (action === "load-more-route-orders") { routeSelectionLimit += 50; render(); return; }
   if (action === "select-single-order") { selectedOrderId = selectedOrderId === id ? null : id; render(); return; }
   if (action === "clear-selection-note") {
     const notes = button.dataset.flow === "session" ? (window._sessionNotes || {}) : (window._addNotes || {});
@@ -1498,9 +1641,8 @@ app.addEventListener("click", async event => {
   if (action === "create-session") {
     if (role !== "shipper") { flash("Chỉ shipper có thể tạo phiên giao hàng."); return; }
     try {
-      const selected = window._sessionSelection || [];
-      const claimed = await claimUnassignedOrders(selected);
-      await updateState(createSession(claimed, selected, window._sessionShifts || {}, Date.now(), window._sessionNotes || {}, window._sessionMaps || {}), "Phiên đã tạo · Sắp xếp tuyến trước khi bắt đầu.");
+      const selected = (window._sessionSelection || []).filter(id => isAssignedPendingOrder(orderById(id), user?.id));
+      await updateState(createSession(state, selected, window._sessionShifts || {}, Date.now(), window._sessionNotes || {}, window._sessionMaps || {}), "Phiên đã tạo · Sắp xếp tuyến trước khi bắt đầu.");
       window._sessionSelection = [];
       window._sessionShifts = {};
       window._sessionNotes = {};
@@ -1515,7 +1657,7 @@ app.addEventListener("click", async event => {
     if (role !== "shipper") { flash("Phiên giao hàng dành cho shipper."); return; }
     if (activeSession()) { flash("Hoàn tất phiên hiện tại trước khi tạo phiên mới."); return; }
     if (currentView().name === "session" && viewStack.length > 1) viewStack.pop();
-    window._sessionSelection = []; window._sessionShifts = {}; window._sessionNotes = {}; window._sessionMaps = {}; sessionDefaultShift = "Sáng"; navigate({ name: "session-create" }); return;
+    window._sessionSelection = []; window._sessionShifts = {}; window._sessionNotes = {}; window._sessionMaps = {}; routeSelectionLimit = 50; sessionDefaultShift = "Sáng"; navigate({ name: "session-create" }); return;
   }
   if (action === "toggle-session-order") {
     const selected = new Set(window._sessionSelection || []);
@@ -1606,7 +1748,7 @@ app.addEventListener("click", async event => {
     } catch (error) { flash(error.message); }
     return;
   }
-  if (action === "add-session-orders") { if (role !== "shipper") { flash("Chỉ shipper có thể chỉnh sửa phiên."); return; } window._addSelection = []; window._addNotes = {}; window._addMaps = {}; navigate({ name: "add-orders" }); return; }
+  if (action === "add-session-orders") { if (role !== "shipper") { flash("Chỉ shipper có thể chỉnh sửa phiên."); return; } window._addSelection = []; window._addNotes = {}; window._addMaps = {}; routeSelectionLimit = 50; navigate({ name: "add-orders" }); return; }
   if (action === "toggle-add-order") {
     const selected = new Set(window._addSelection || []);
     if (selected.has(id)) selected.delete(id);
@@ -1616,9 +1758,8 @@ app.addEventListener("click", async event => {
   if (action === "confirm-add-orders") {
     if (role !== "shipper") { flash("Chỉ shipper có thể chỉnh sửa phiên."); return; }
     try {
-      const selected = window._addSelection || [];
-      const claimed = await claimUnassignedOrders(selected);
-      await updateState(addOrdersToSession(claimed, selected, addOrdersShift, window._addNotes || {}, window._addMaps || {}), "Đã thêm đơn vào phiên.");
+      const selected = (window._addSelection || []).filter(id => isAssignedPendingOrder(orderById(id), user?.id));
+      await updateState(addOrdersToSession(state, selected, addOrdersShift, window._addNotes || {}, window._addMaps || {}), "Đã thêm đơn vào phiên.");
       window._addSelection = []; window._addNotes = {}; window._addMaps = {}; viewStack.pop(); sessionTab = "route"; render();
       persistLastView();
     } catch (error) { flash(error.message); }
@@ -1651,6 +1792,25 @@ app.addEventListener("click", async event => {
     } catch (error) { flash(error.message); }
     return;
   }
+  if (action === "choose-orphan-status") {
+    const order = orderById(id);
+    if (role !== "shipper" || !isOrphanInTransitOrder(state, order, user?.id)) { flash("Đơn không còn thuộc danh sách xử lý của bạn."); return; }
+    modal = { type: "orphan-delivery", orderId: id, status: button.dataset.status };
+    render(); return;
+  }
+  if (action === "confirm-orphan-status") {
+    const { orderId, status } = modal?.type === "orphan-delivery" ? modal : {};
+    if (role !== "shipper" || !orderId) { modal = null; render(); flash("Tài khoản này không thể sửa trạng thái đơn."); return; }
+    try {
+      const next = resolveOrphanDelivery(state, orderId, user?.id, status);
+      modal = null;
+      const message = status === "Chưa giao hàng" ? "Đơn đã trở về danh sách chờ giao."
+        : status === "Đã giao hàng" ? "Đã đánh dấu đơn đã giao."
+          : "Đã hủy đơn.";
+      await updateState(next, message);
+    } catch (error) { modal = null; render(); flash(error.message); }
+    return;
+  }
   if (action === "deliver-order") { await deliverOrder(id); return; }
   if (action === "confirm-delivery-unpaid") {
     const orderId = modal.orderId;
@@ -1666,7 +1826,7 @@ app.addEventListener("click", async event => {
     catch (error) { modal = null; render(); flash(error.message); }
     return;
   }
-  if (action === "close-modal") { modal = null; render(); return; }
+  if (action === "close-modal") { clearInterval(retryCountdownTimer); retryCountdownTimer = null; modal = null; render(); return; }
   if (action === "choose-photo") {
     if (button.dataset.source === "camera") await openCamera();
     else document.querySelector("#upload-input")?.click();
@@ -1686,6 +1846,20 @@ app.addEventListener("pointerdown", beginRouteDrag);
 app.addEventListener("pointermove", updateRouteDrag);
 app.addEventListener("pointerup", event => finishRouteDrag(event));
 app.addEventListener("pointercancel", event => finishRouteDrag(event, true));
+app.addEventListener("lostpointercapture", event => finishRouteDrag(event, true));
+app.addEventListener("selectstart", event => {
+  if (routeDrag || event.target.closest("[data-drag-order]")) event.preventDefault();
+});
+app.addEventListener("contextmenu", event => {
+  if (routeDrag || event.target.closest("[data-drag-order]")) event.preventDefault();
+});
+app.addEventListener("dragstart", event => {
+  if (routeDrag || event.target.closest("[data-drag-order]")) event.preventDefault();
+});
+window.addEventListener("blur", () => cancelRouteDrag());
+window.addEventListener("keydown", event => {
+  if (event.key === "Escape" && routeDrag) { event.preventDefault(); cancelRouteDrag(); }
+});
 window.addEventListener("scroll", updateContinueRouteButton, { passive: true });
 window.addEventListener("resize", updateContinueRouteButton);
 app.addEventListener("keydown", event => {
@@ -1798,7 +1972,7 @@ app.addEventListener("submit", async event => {
       user = accounts[user.id] || user;
       render();
       flash("Đã lưu danh sách tài khoản.");
-    } catch (error) { showError(error.message); }
+    } catch (error) { showError(error); }
     finally { if (submit?.isConnected) setButtonBusy(submit, false); }
   }
 });

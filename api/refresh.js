@@ -9,6 +9,22 @@ import { importSheetOrders, markSheetPull } from "../server-lib/sync.mjs";
 import { flushUpstream } from "../server-lib/upstream.mjs";
 
 const TABLES = ["mealfit_accounts", "mealfit_orders", "mealfit_sessions", "mealfit_operations", "mealfit_payment_events", "mealfit_upstream_outbox", "mealfit_media", "mealfit_conflicts", "mealfit_audit_log", "mealfit_auth_attempts", "mealfit_sync_meta"];
+const REFRESH_COOLDOWN_MS = 10_000;
+
+async function acquireUserRefreshSlot(sql, userId) {
+  const key = `sheet-refresh:${userId}`;
+  const allowed = await sql`INSERT INTO mealfit_sync_meta (key, value, updated_at)
+    VALUES (${key}, '{}'::jsonb, clock_timestamp())
+    ON CONFLICT (key) DO UPDATE SET updated_at = EXCLUDED.updated_at
+    WHERE mealfit_sync_meta.updated_at <= EXCLUDED.updated_at - interval '10 seconds'
+    RETURNING key`;
+  if (allowed.length) return;
+  const rows = await sql`SELECT updated_at FROM mealfit_sync_meta WHERE key = ${key} LIMIT 1`;
+  const retryAfter = Math.max(1, Math.ceil((new Date(rows[0].updated_at).getTime() + REFRESH_COOLDOWN_MS - Date.now()) / 1000));
+  const error = new AppError(429, "SYNC_COOLDOWN", `Đồng bộ vừa được thử. Vui lòng chờ ${retryAfter} giây rồi thử lại.`);
+  error.retryAfterSeconds = retryAfter;
+  throw error;
+}
 
 async function runMaintenance(req, res) {
   requireMethod(req, "GET", "POST");
@@ -59,6 +75,7 @@ export default handler(async (req, res) => {
   let stage = recent ? "cache" : "n8n-fetch";
   if (!recent) {
     try {
+      await acquireUserRefreshSlot(sql, user.id);
       const previousPull = meta[0]?.updated_at ? new Date(new Date(meta[0].updated_at).valueOf() - 120_000).toISOString() : "";
       const pull = await fetchSheetOrdersForShippers({ shippers: sheetShipperNames(user), limit: 500, modifiedSince: previousPull });
       received = pull.received;
