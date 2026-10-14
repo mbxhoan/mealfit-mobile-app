@@ -6,6 +6,7 @@ import {
   createSession,
   dueAmount,
   getSessionStats,
+  missingCriticalOrderFields,
   markDelivered,
   markPaid,
   normalizeState,
@@ -78,6 +79,12 @@ const activeSession = () => state.sessions.find(session => session.id === state.
 const isStaff = () => role === "admin" || role === "user";
 const canSeeOrder = order => role !== "shipper" || !order.assignedUserId || order.assignedUserId === user?.id;
 const money = amount => `${Math.round(Number(amount) || 0).toLocaleString("vi-VN")}đ`;
+const callNumber = order => String(order?.phone ?? "").replace(/\D/g, "");
+
+function orderWarning(order) {
+  const missing = missingCriticalOrderFields(order);
+  return missing.length ? `<span class="order-warning" role="note">Thiếu thông tin: ${missing.map(safe).join(", ")}</span>` : "";
+}
 const safe = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const addressLabel = value => safe(String(value ?? "").replace(/^Địa chỉ\s+/i, ""));
 const paymentRecipient = { bank: "VIB", account: "865884858", name: "Phạm Thị Linh Uyên" };
@@ -279,7 +286,7 @@ function orderCard(order, clickable = true, selected = false) {
     ${selected ? '<span class="checkmark" aria-hidden="true"></span>' : ""}
     <div style="flex:1;min-width:0">
       <div class="card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(order.deliveryStatus)}</div>
-      <p class="order-customer">${safe(order.customer)}</p><p class="order-address">${addressLabel(order.address)}</p>
+      <p class="order-customer">${safe(order.customer)}</p><p class="order-address">${addressLabel(order.address)}</p>${orderWarning(order)}
       <div class="order-subline">${dateLabel(order.date)} · ${statusBadge(order.paymentStatus || (due ? "Chưa thanh toán" : "Đã thanh toán"), "payment")}</div>
       <div class="card-bottom"><span class="money">${money(order.total)}${due ? `<small class="money-sub">Còn thu ${money(due)}</small>` : ""}</span><span>${icon("chevron", 18)}</span></div>
     </div>
@@ -327,6 +334,7 @@ function orderDetailScreen(view) {
   if (!order) return `<main class="page"><div class="empty-state">Không tìm thấy đơn hàng.</div></main>`;
   const items = Array.isArray(order.items) ? order.items : [];
   const fromSession = Boolean(view.fromSession && role === "shipper");
+  const phone = callNumber(order);
   const due = dueAmount(order);
   const session = activeSession();
   const sessionPaused = session?.status === "paused";
@@ -342,13 +350,13 @@ function orderDetailScreen(view) {
   const productLine = item => `<div class="product-line"><span>${safe(item.name)}</span><span class="product-price">${money(item.total ?? item.unitPrice * item.quantity)}</span><small>${safe(item.details || item.weight || "")} · ${item.quantity} phần × ${money(item.unitPrice)}</small></div>`;
   return `<main class="page ${sessionPaused ? "paused" : ""} order-page"><div class="order-meta"><p class="eyebrow">${safe(order.id)} · ${dateLabel(order.date)}</p>${statusBadge(order.deliveryStatus)}</div>
     <div class="detail-card order-detail">
-      <section class="detail-section customer-section"><div class="customer-line"><strong>${safe(order.customer)}</strong><span class="customer-phone">${safe(order.phone)}</span></div><div class="customer-address-line"><div class="customer-address">${addressLabel(order.address)}</div>${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}</div>${order.note ? `<div class="customer-note">${safe(order.note)}</div>` : ""}${deliveryInfo}</section>
+      <section class="detail-section customer-section"><div class="customer-line"><strong>${safe(order.customer)}</strong><span class="customer-phone">${safe(order.phone || "Chưa có SĐT")}</span></div><div class="customer-address-line"><div class="customer-address">${addressLabel(order.address)}</div>${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}</div>${orderWarning(order)}${order.note ? `<div class="customer-note">${safe(order.note)}</div>` : ""}${deliveryInfo}</section>
       ${items.length ? `<section class="detail-section product-section"><h2>Sản phẩm <span>${items.length}</span></h2>${productLine(items[0])}${items.length > 1 ? `<details class="product-more"><summary><span>Xem thêm ${items.length - 1} món</span><span>Thu gọn</span></summary>${items.slice(1).map(productLine).join("")}</details>` : ""}</section>` : ""}
       <section class="detail-section payment-section"><h2>Thanh toán</h2><div class="detail-row"><span>Tiền hàng · ship</span><span>${money(order.subtotal)} · ${money(order.shippingFee)}</span></div><div class="detail-row total"><span>Tổng đơn</span><span>${money(order.total)}</span></div>${paymentSummary(order)}<button class="button secondary full qr-payment-button" data-action="show-payment-qr" data-id="${safe(order.id)}">${icon("qr", 18)} Hiện QR thanh toán</button></section>
       ${(order.deliveryMethod && order.deliveryMethod !== "Phiên giao hàng") || order.deliveredAt ? `<section class="detail-section delivery-section"><h2>Giao hàng</h2>${order.deliveryMethod && order.deliveryMethod !== "Phiên giao hàng" ? `<div class="detail-row"><span>Hình thức</span><span>${safe(order.deliveryMethod)}</span></div>` : ""}${order.deliveredAt ? `<div class="detail-row"><span>Đã giao lúc</span><span>${timeLabel(order.deliveredAt)} · ${dateLabel(order.deliveredAt)}</span></div>` : ""}</section>` : ""}
       ${photoSection(order, sessionPaused)}
     </div>${mayCorrect ? `<button class="button secondary full" style="margin-top:10px" data-action="reopen-order-status" data-id="${safe(order.id)}">Sửa trạng thái giao hàng</button>` : ""}
-    <div class="detail-actions-dock"><a class="button call-customer-full" href="tel:${safe(order.phone.replace(/\D/g, ""))}" aria-label="Gọi ${safe(order.customer)}">${icon("phone", 18)} Gọi khách · ${safe(order.phone)}</a>${actions}</div>
+    ${phone || actions ? `<div class="detail-actions-dock">${phone ? `<a class="button call-customer-full" href="tel:${safe(phone)}" aria-label="Gọi ${safe(order.customer)}">${icon("phone", 18)} Gọi khách · ${safe(order.phone)}</a>` : ""}${actions}</div>` : ""}
   </main>`;
 }
 
@@ -379,7 +387,7 @@ function singleDeliveryScreen() {
 }
 
 function orderSelectionButton(order, selected, action) {
-  return `<button class="select-order ${selected ? "selected" : ""}" aria-pressed="${selected}" data-action="${action}" data-id="${safe(order.id)}"><span class="checkmark" aria-hidden="true"></span><span class="selection-copy"><span class="selection-card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(order.paymentStatus || (dueAmount(order) ? "Chưa thanh toán" : "Đã thanh toán"), "payment")}</span><span class="selection-customer-line"><span class="order-customer">${safe(order.customer)}</span><strong class="selection-price">${money(order.total)}</strong></span><span class="order-address">${addressLabel(order.address)}</span><span class="order-subline">${(order.items || []).length} dòng</span></span></button>`;
+  return `<button class="select-order ${selected ? "selected" : ""}" aria-pressed="${selected}" data-action="${action}" data-id="${safe(order.id)}"><span class="checkmark" aria-hidden="true"></span><span class="selection-copy"><span class="selection-card-top"><span class="order-number">${safe(order.id)}</span>${statusBadge(order.paymentStatus || (dueAmount(order) ? "Chưa thanh toán" : "Đã thanh toán"), "payment")}</span><span class="selection-customer-line"><span class="order-customer">${safe(order.customer)}</span><strong class="selection-price">${money(order.total)}</strong></span><span class="order-address">${addressLabel(order.address)}</span><span class="order-subline">${(order.items || []).length} dòng</span>${orderWarning(order)}</span></button>`;
 }
 
 function selectionNoteEditor(flow, order) {
@@ -451,10 +459,11 @@ function sessionScreen() {
     const done = isDone(order);
     const currentStop = order.id === nextId;
     const leg = session.legs[order.id];
+    const phone = callNumber(order);
     return `<div class="route-stop ${done ? "done" : currentStop ? "current" : ""}" data-order-id="${safe(order.id)}" data-completed="${done}" data-shift="${safe(session.shifts?.[order.id] || "")}"><div class="stop-mark">${done ? icon("check", 17) : index + 1}</div><div class="stop-card" data-action="open-order-session" data-id="${safe(order.id)}" tabindex="-1">
       <button class="stop-open" data-action="open-order-session" data-id="${safe(order.id)}"><span class="stop-primary"><span class="stop-title">${safe(order.customer)} <small>· ${safe(order.id)}</small></span><span class="stop-total">${money(order.total)}<small class="money-sub">${dueAmount(order) ? `Thu ${money(dueAmount(order))}` : "Đã thanh toán"}</small></span></span><span class="stop-caption">${addressLabel(order.address)}</span>${order.note ? `<span class="stop-note">${safe(order.note)}</span>` : ""}</button>
-      ${editable && !done ? noteTools(order) : ""}
-      <div class="stop-bottom">${shiftSelect(order)}<div class="stop-tools">${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}<a class="stop-call" href="tel:${safe(order.phone.replace(/\D/g, ""))}" aria-label="Gọi ${safe(order.customer)}">${icon("phone", 18)}</a>${editable && !done ? `<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)} trong ca ${safe(session.shifts?.[order.id] || "chưa phân ca")}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button>` : ""}</div></div>
+      ${orderWarning(order)}${editable && !done ? noteTools(order) : ""}
+      <div class="stop-bottom">${shiftSelect(order)}<div class="stop-tools">${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}${phone ? `<a class="stop-call" href="tel:${safe(phone)}" aria-label="Gọi ${safe(order.customer)}">${icon("phone", 18)}</a>` : ""}${editable && !done ? `<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)} trong ca ${safe(session.shifts?.[order.id] || "chưa phân ca")}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button>` : ""}</div></div>
       ${leg ? `<div class="leg-time">${icon("clock", 14)} Chặng này: ${elapsedLabel(leg.durationMs)} · ${timeLabel(leg.completedAt)}</div>` : ""}
       ${!done && session.status === "paused" ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? '<button class="button secondary small" disabled>Đã thanh toán</button>' : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" disabled>Đã giao hàng</button></div>` : ""}
       ${!done && delivering ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? `<button class="button secondary small" data-action="pay-order" data-id="${safe(order.id)}">Đã thanh toán</button>` : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" data-action="deliver-order" data-id="${safe(order.id)}">Đã giao hàng</button></div>` : ""}</div></div>`;
@@ -470,7 +479,7 @@ function sessionScreen() {
   const unassigned = session.orderIds.filter(id => !session.shifts?.[id]).length;
   const orderListCard = (order, index) => {
     const done = isDone(order);
-    return `<div class="session-order ${done ? "done" : ""}" data-order-id="${safe(order.id)}" data-completed="${done}" data-shift="${safe(session.shifts?.[order.id] || "")}"><button class="session-order-open" data-action="open-order-session" data-id="${safe(order.id)}"><span class="session-order-top"><strong>${index + 1}. ${safe(order.customer)} · ${safe(order.id)}</strong>${statusBadge(routeStatus(order))}</span><span class="order-address">${addressLabel(order.address)}</span>${order.note ? `<span class="order-address">${safe(order.note)}</span>` : ""}<span class="session-order-total">${money(order.total)} · ${dueAmount(order) ? `Còn thu ${money(dueAmount(order))}` : "Đã thanh toán"}</span></button>${editable && !done ? `<div class="session-order-tools">${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)} trong ca ${safe(session.shifts?.[order.id] || "chưa phân ca")}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button></div>${noteTools(order)}` : mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}</div>`;
+    return `<div class="session-order ${done ? "done" : ""}" data-order-id="${safe(order.id)}" data-completed="${done}" data-shift="${safe(session.shifts?.[order.id] || "")}"><button class="session-order-open" data-action="open-order-session" data-id="${safe(order.id)}"><span class="session-order-top"><strong>${index + 1}. ${safe(order.customer)} · ${safe(order.id)}</strong>${statusBadge(routeStatus(order))}</span><span class="order-address">${addressLabel(order.address)}</span>${orderWarning(order)}${order.note ? `<span class="order-address">${safe(order.note)}</span>` : ""}<span class="session-order-total">${money(order.total)} · ${dueAmount(order) ? `Còn thu ${money(dueAmount(order))}` : "Đã thanh toán"}</span></button>${editable && !done ? `<div class="session-order-tools">${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)} trong ca ${safe(session.shifts?.[order.id] || "chưa phân ca")}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button></div>${noteTools(order)}` : mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}</div>`;
   };
   const groupedOrders = [...SHIFT_OPTIONS, "Chưa phân ca"].map(shift => ({
     shift,

@@ -8,6 +8,7 @@ import {
   createSession,
   dueAmount,
   getSessionStats,
+  missingCriticalOrderFields,
   markDelivered,
   markPaid,
   moveOrderInSession,
@@ -37,6 +38,22 @@ const seed = () => ({
 
 const order = (state, id) => state.orders.find(item => item.id === id);
 const session = state => state.sessions[0];
+
+test("missing critical order fields warn without blocking route creation", () => {
+  const incomplete = {
+    id: "DH0001", customer: "Khách A", phone: "", address: "Quận 1", total: 100_000,
+    paymentStatus: "Chưa thanh toán", deliveryStatus: "Chưa giao hàng",
+    raw: { "Mã đơn": "DH0001", "Tên KH": "Khách A", "Địa chỉ": "Quận 1", "Sau giảm (đ)": 100_000 }
+  };
+  assert.deepEqual(missingCriticalOrderFields(incomplete), ["SĐT", "trạng thái thanh toán", "trạng thái giao hàng"]);
+  assert.deepEqual(missingCriticalOrderFields({ raw: { "Mã đơn": "DH0002" }, total: 0 }), ["tên khách", "SĐT", "địa chỉ", "số tiền", "trạng thái thanh toán", "trạng thái giao hàng"]);
+  const created = createSession({ ...seed(), orders: [incomplete] }, ["DH0001"], "Sáng", 1000);
+  assert.equal(order(created, "DH0001").deliveryStatus, "Đang giao hàng");
+  const existingSession = createSession({ ...seed(), orders: [...seed().orders, incomplete] }, ["A"], "Sáng", 2000);
+  const added = addOrdersToSession(existingSession, ["DH0001"], "Tối");
+  assert.ok(session(added).orderIds.includes("DH0001"));
+  assert.equal(order(added, "DH0001").deliveryStatus, "Đang giao hàng");
+});
 
 test("network signal maps offline and weak browser readings to semantic states", () => {
   assert.equal(classifyNetworkSignal(false, { effectiveType: "4g" }), "offline");

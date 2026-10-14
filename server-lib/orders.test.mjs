@@ -39,6 +39,18 @@ test("n8n updates send the full validated body and cumulative paid amount", () =
   }, "sheet-test"), /đã thanh toán/);
 });
 
+test("n8n updates allow missing customer contact details while preserving required API fields", () => {
+  const body = toN8nBody({
+    id: "DH0899", customer: "", phone: "", address: "", shipperName: "",
+    paidAmount: 0, paymentStatus: "Chưa thanh toán", deliveryStatus: "Đang giao hàng", note: ""
+  }, "sheet-test");
+  assert.equal(body.shipper, "Chưa phân công");
+  assert.equal(body.total, "0");
+  assert.throws(() => toN8nBody({
+    id: "DH0899", phone: 123, paidAmount: 0, paymentStatus: "Chưa thanh toán", deliveryStatus: "Đang giao hàng", note: ""
+  }, "sheet-test"), /phone không hợp lệ/);
+});
+
 test("claim retry succeeds only for the same shipper while the order is still pending", () => {
   assert.equal(canReuseClaim({ assigned_user_id: "hieu", shipping_status: "Chưa giao hàng" }, "hieu"), true);
   assert.equal(canReuseClaim({ assigned_user_id: "hoan", shipping_status: "Chưa giao hàng" }, "hieu"), false);

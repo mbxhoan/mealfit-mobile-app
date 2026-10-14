@@ -236,6 +236,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .selection-price { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .selection-copy .order-address { display: block; overflow-wrap: anywhere; font-size: 11px; line-height: 1.35; }
 .selection-copy .order-subline { margin-top: 0; font-size: 10px; }
+.order-warning { display: block; width: fit-content; max-width: 100%; margin: 5px 0 0; padding: 4px 7px; border: 1px solid #f1d18b; border-radius: 7px; background: #fff6df; color: #8b5a00; font-size: 10px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
 .selection-note { display: grid; gap: 6px; padding: 4px 2px 2px; }
 .selection-note label { color: var(--muted); font-size: 11px; font-weight: 650; }
 .selection-note textarea { width: 100%; min-height: 60px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); font: inherit; font-size: 13px; line-height: 1.4; resize: vertical; }

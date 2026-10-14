@@ -77,7 +77,7 @@ export function validateOrderMutation(order) {
   if (!PAYMENT_STATUSES.includes(order.paymentStatus)) throw new AppError(400, "INVALID_PAYMENT_STATUS", "Trạng thái thanh toán không hợp lệ.");
   if (!Number.isFinite(Number(order.paidAmount)) || Number(order.paidAmount) < 0) throw new AppError(400, "INVALID_TOTAL", "Tổng tiền đã thanh toán phải từ 0đ trở lên.");
   for (const field of ["customer", "phone", "address", "shipperName"]) {
-    if (typeof order[field] !== "string" || !order[field].trim()) throw new AppError(400, "MISSING_FIELD", `Thiếu thông tin ${field}.`);
+    if (order[field] != null && typeof order[field] !== "string") throw new AppError(400, "INVALID_FIELD", `Thông tin ${field} không hợp lệ.`);
   }
   if (typeof order.note !== "string") throw new AppError(400, "INVALID_NOTE", "Ghi chú phải là văn bản.");
   if (order.note.length > 2000) throw new AppError(400, "INVALID_NOTE", "Ghi chú tối đa 2.000 ký tự.");

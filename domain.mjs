@@ -22,6 +22,23 @@ export const dueAmount = order => order.paymentStatus === "Đã thanh toán"
   ? 0
   : Math.max(0, Number.isFinite(Number(order.remainingDue)) ? Number(order.remainingDue) : order.total - order.paidAmount);
 
+export function missingCriticalOrderFields(order) {
+  const raw = order?.raw && typeof order.raw === "object" ? order.raw : null;
+  const amount = raw
+    ? ["Tổng CÓ SHIP", "Sau giảm (đ)", "Tổng CHƯA SHIP"].map(key => raw[key]).find(value => value != null && String(value).trim() !== "")
+    : order?.total;
+  const parsedAmount = Number(String(amount ?? "").replace(/,/g, ""));
+  const hasAmount = amount != null && String(amount).trim() !== "" && Number.isFinite(parsedAmount) && parsedAmount >= 0;
+  const missing = [];
+  if (!String(order?.customer ?? "").trim()) missing.push("tên khách");
+  if (!String(order?.phone ?? "").replace(/\D/g, "")) missing.push("SĐT");
+  if (!String(order?.address ?? "").trim()) missing.push("địa chỉ");
+  if (!hasAmount) missing.push("số tiền");
+  if (!(raw ? ["Chưa thanh toán", "Đã thanh toán"].includes(raw["Trạng thái đơn"]) : ["Chưa thanh toán", "Đã thanh toán"].includes(order?.paymentStatus))) missing.push("trạng thái thanh toán");
+  if (!(raw ? ["Chưa giao hàng", "Đang giao hàng", "Đã giao hàng", "Đã huỷ đơn"].includes(raw["Trạng thái giao hàng"]) : ["Chưa giao hàng", "Đang giao hàng", "Đã giao hàng", "Đã huỷ đơn"].includes(order?.deliveryStatus))) missing.push("trạng thái giao hàng");
+  return missing;
+}
+
 const shiftRank = shift => {
   const rank = SHIFT_OPTIONS.indexOf(shift);
   return rank < 0 ? SHIFT_OPTIONS.length : rank;
