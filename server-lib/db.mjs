@@ -10,6 +10,13 @@ export function getSql() {
   return neon(databaseUrl());
 }
 
+export async function withAdvisoryLock(lockId, callback) {
+  return withTransaction(async client => {
+    await client.query("SELECT pg_advisory_xact_lock($1)", [lockId]);
+    return callback(client);
+  });
+}
+
 export async function withTransaction(callback) {
   const pool = new Pool({ connectionString: databaseUrl(), max: 1 });
   const client = await pool.connect();

@@ -40,7 +40,7 @@ Giá trị hợp lệ: giao hàng `Chưa giao hàng`, `Đang giao hàng`, `Đã 
 ## Đồng bộ và khôi phục
 
 - UI xác nhận thay đổi sau khi IndexedDB ghi xong; bản ghi đồng bộ cục bộ giữ cùng operation ID và body trong mỗi lần retry. App kiểm tra thay đổi từ Sheet mỗi phút; endpoint server dùng cửa sổ sửa đổi có overlap để không bỏ lỡ cập nhật gần thời điểm đồng bộ.
-- API dùng revision ở Postgres, hàng đợi theo thứ tự phiên bản và idempotency key khi đẩy n8n. Admin xử lý xung đột ở mục **Xung đột**.
+- API dùng revision ở Postgres, hàng đợi theo thứ tự phiên bản và idempotency key khi đẩy n8n. Worker giữ khóa advisory Postgres trong lúc gửi, giãn các lần gọi tối thiểu 1,1 giây, nên các cập nhật `shipping-order` từ nhiều instance Vercel được xử lý lần lượt; bản ghi worker bị ngắt được thử lại sau 2 phút. Admin xử lý xung đột ở mục **Xung đột**.
 - Vercel Blob lưu ảnh riêng tư trước khi upload n8n. Ảnh và hàng đợi trên thiết bị được giữ khi mất mạng; cần mở lại app có mạng để thử đồng bộ.
 - Cron mỗi ngày nhập thay đổi từ Sheet, chạy hàng đợi và lưu snapshot JSON riêng tư. Cron Hobby chỉ chạy tối đa một lần/ngày và trễ theo giờ; nâng Pro để có lịch nền dày hơn. Sao chép backup sang vị trí độc lập, giới hạn quyền đọc, và thử khôi phục định kỳ.
 - Khôi phục database từ snapshot cần tạo database/branch mới, kiểm tra JSON và nạp lại theo dependency: orders, sessions, operations, payments, outbox, media, conflicts, audit, auth attempts, sync metadata. Không ghi đè production khi chưa kiểm tra backup.
