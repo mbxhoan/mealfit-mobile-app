@@ -117,6 +117,7 @@ export async function importSheetOrders(rows) {
         OR EXCLUDED.shipper_name IS DISTINCT FROM mealfit_orders.shipper_name
         OR EXCLUDED.assigned_user_id IS DISTINCT FROM mealfit_orders.assigned_user_id
         OR EXCLUDED.note IS DISTINCT FROM mealfit_orders.note
+        OR EXCLUDED.row_data->>'Ghi chú' IS DISTINCT FROM mealfit_orders.row_data->>'Ghi chú'
         OR (EXCLUDED.items IS NOT NULL AND mealfit_orders.items IS DISTINCT FROM EXCLUDED.items)
       )))
       AND NOT EXISTS (SELECT 1 FROM mealfit_upstream_outbox queued

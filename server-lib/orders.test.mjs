@@ -23,6 +23,14 @@ test("normalized order details keep item rows supplied by the Sheet workflow", (
   assert.deepEqual(order.items, [{ name: "Ức gà", quantity: 2, unitPrice: 48_000, total: 96_000 }]);
 });
 
+test("keeps the default order note separate from the shipper note", () => {
+  const order = normalizeSheetOrder({
+    "Mã đơn": "DH0899", "Ghi chú": "Đơn này là đơn test", "Ghi chú bởi shipper": "Gọi trước khi đến"
+  });
+  assert.equal(order.customerNote, "Đơn này là đơn test");
+  assert.equal(order.note, "Gọi trước khi đến");
+});
+
 test("n8n updates send the full validated body and cumulative paid amount", () => {
   const body = toN8nBody({
     id: "DH0899", customer: "Khách A", phone: "0900000000", address: "Quận 1", shipperName: "Hiếu",

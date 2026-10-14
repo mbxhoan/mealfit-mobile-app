@@ -145,6 +145,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .order-number { font-size: 13px; font-weight: 750; }
 .order-customer { margin: 8px 0 3px; font-size: 15px; font-weight: 700; }
 .order-address { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.order-customer-note { display: -webkit-box; margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.35; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.order-customer-note strong { font-weight: 650; }
 .order-subline { margin-top: 8px; color: var(--muted); font-size: 12px; }
 .card-bottom { margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--line); }
 .money { font-size: 15px; font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -176,6 +178,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .maps-link-button:active { transform: scale(.95); filter: brightness(.9); }
 .customer-address { margin-top: 5px; color: #56595e; font-size: 11px; line-height: 1.4; }
 .customer-note { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.customer-note strong { font-weight: 650; }
 .detail-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 15px; padding: 7px 0; font-size: 13px; line-height: 1.45; }
 .detail-row span:first-child { color: var(--muted); flex: 0 0 36%; }
 .detail-row span:last-child { text-align: right; overflow-wrap: anywhere; }
@@ -240,6 +243,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .selection-customer-line .order-customer { min-width: 0; display: block; margin: 0; overflow-wrap: anywhere; font-size: 12px; }
 .selection-price { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .selection-copy .order-address { display: block; overflow-wrap: anywhere; font-size: 11px; line-height: 1.35; }
+.selection-copy .order-customer-note { margin-top: 1px; font-size: 10px; line-height: 1.3; }
 .selection-copy .order-subline { margin-top: 0; font-size: 10px; }
 .order-warning { display: block; width: fit-content; max-width: 100%; margin: 5px 0 0; padding: 4px 7px; border: 1px solid #f1d18b; border-radius: 7px; background: #fff6df; color: #8b5a00; font-size: 10px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
 .selection-note { display: grid; gap: 6px; padding: 4px 2px 2px; }
