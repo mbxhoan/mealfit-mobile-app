@@ -8,6 +8,7 @@ import {
   createSession,
   dueAmount,
   getSessionStats,
+  isEdgeBackSwipe,
   missingCriticalOrderFields,
   markDelivered,
   markPaid,
@@ -63,6 +64,15 @@ test("network signal maps offline and weak browser readings to semantic states",
   assert.equal(classifyNetworkSignal(true, { rtt: 700 }), "weak");
   assert.equal(classifyNetworkSignal(true, { effectiveType: "4g", downlink: 20, rtt: 40 }), "stable");
   assert.equal(classifyNetworkSignal(true), "stable");
+});
+
+test("edge back swipe requires a long inward horizontal gesture", () => {
+  assert.equal(isEdgeBackSwipe({ x: 5, y: 100 }, { x: 100, y: 110 }, 390), true);
+  assert.equal(isEdgeBackSwipe({ x: 385, y: 100 }, { x: 290, y: 110 }, 390), true);
+  assert.equal(isEdgeBackSwipe({ x: 5, y: 100 }, { x: 100, y: 200 }, 390), false);
+  assert.equal(isEdgeBackSwipe({ x: 5, y: 100 }, { x: 70, y: 100 }, 390), false);
+  assert.equal(isEdgeBackSwipe({ x: 80, y: 100 }, { x: 180, y: 100 }, 390), false);
+  assert.equal(isEdgeBackSwipe({ x: 5, y: 100 }, { x: 100, y: 100 }, 390), true);
 });
 
 test("single delivery validates input and records actual shipping fee", () => {

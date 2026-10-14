@@ -14,6 +14,13 @@ export function classifyNetworkSignal(online, connection = {}) {
     : "stable";
 }
 
+export function isEdgeBackSwipe(start, end, viewportWidth) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  return (start.x <= 24 && dx >= 80 || start.x >= viewportWidth - 24 && dx <= -80)
+    && Math.abs(dx) > Math.abs(dy) * 1.5;
+}
+
 export function allowedPhotoCount(existingCount, requestedCount) {
   return Math.max(0, Math.min(Math.floor(requestedCount), MAX_PHOTOS_PER_ORDER - Math.floor(existingCount)));
 }

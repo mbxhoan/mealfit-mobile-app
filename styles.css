@@ -244,6 +244,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .maps-input { min-height: 42px; font-size: 12px; }
 .note-clear { min-height: 36px; justify-self: end; padding: 3px 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
 .shift-select { min-height: 40px; padding: 0 11px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); font-size: 12px; }
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]), textarea, select:not([multiple]) { font-size: 16px; }
+}
 .stop-shift { margin-top: 6px; }
 .shift-label { display: inline-flex; margin-top: 6px; padding: 4px 8px; border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 11px; }
 .checkmark { width: 23px; height: 23px; border: 1px solid #c8c9cd; border-radius: 7px; flex: 0 0 auto; }

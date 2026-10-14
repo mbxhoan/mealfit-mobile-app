@@ -6,6 +6,7 @@ import {
   createSession,
   dueAmount,
   getSessionStats,
+  isEdgeBackSwipe,
   missingCriticalOrderFields,
   markDelivered,
   markPaid,
@@ -50,6 +51,7 @@ let addOrdersShift = "Sáng";
 let routeAnnouncement = "";
 let routeNoteOrderId = null;
 let orderNoteEditId = null;
+let edgeTouch = null;
 let routeDrag = null;
 let routeDragFrame = null;
 let toastTimer = null;
@@ -614,6 +616,38 @@ function back() {
   render();
   persistLastView();
 }
+
+window.addEventListener("touchstart", event => {
+  if (event.touches.length !== 1 || event.target.closest("input, textarea, select, [contenteditable='true']")) {
+    edgeTouch = null;
+    return;
+  }
+  const touch = event.touches[0];
+  edgeTouch = touch.clientX <= 24 ? { x: touch.clientX, y: touch.clientY, side: "left" }
+    : touch.clientX >= window.innerWidth - 24 ? { x: touch.clientX, y: touch.clientY, side: "right" }
+      : null;
+}, { passive: true });
+
+window.addEventListener("touchmove", event => {
+  if (!edgeTouch || event.touches.length !== 1) return;
+  const touch = event.touches[0];
+  const dx = touch.clientX - edgeTouch.x;
+  const dy = touch.clientY - edgeTouch.y;
+  const inward = edgeTouch.side === "left" ? dx > 0 : dx < 0;
+  if (inward && Math.abs(dx) >= 8 && Math.abs(dx) > Math.abs(dy) * 1.5) event.preventDefault();
+  else if (Math.abs(dy) > 12 || Math.abs(dx) > 24) edgeTouch = null;
+}, { passive: false });
+
+window.addEventListener("touchend", event => {
+  if (!edgeTouch) return;
+  const start = edgeTouch;
+  edgeTouch = null;
+  const touch = event.changedTouches[0];
+  if (touch && (modal || viewStack.length > 1)
+    && isEdgeBackSwipe({ x: start.x, y: start.y }, { x: touch.clientX, y: touch.clientY }, window.innerWidth)) back();
+}, { passive: true });
+
+window.addEventListener("touchcancel", () => { edgeTouch = null; }, { passive: true });
 
 function showSessionHistory(sessionId) {
   const routeView = [...viewStack].reverse().find(view => view.name === "session");
