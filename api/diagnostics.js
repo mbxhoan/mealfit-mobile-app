@@ -1,13 +1,22 @@
-import { AppError, handler, requireMethod, send } from "../server-lib/core.mjs";
+import { AppError, handler, readJson, requireMethod, send } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { getSql } from "../server-lib/db.mjs";
-import { fetchSheetOrders } from "../server-lib/n8n.mjs";
+import { fetchSheetOrders, pushAppLog } from "../server-lib/n8n.mjs";
 
 export default handler(async (req, res) => {
+  const url = new URL(req.url, `https://${req.headers.host || "mealfit.local"}`);
+  if (url.searchParams.get("view") === "log") {
+    requireMethod(req, "POST");
+    assertSameOrigin(req);
+    const user = await requireUser(req);
+    await pushAppLog(await readJson(req), user);
+    send(res, 200, { status: "sent" });
+    return;
+  }
+
   requireMethod(req, "GET");
   assertSameOrigin(req);
   const user = await requireUser(req);
-  const url = new URL(req.url, `https://${req.headers.host || "mealfit.local"}`);
   if (url.searchParams.get("view") === "logs") {
     if (user.role !== "admin") throw new AppError(403, "ADMIN_REQUIRED", "Chỉ admin được xem lịch sử hệ thống.");
     const kind = url.searchParams.get("kind") || "api";

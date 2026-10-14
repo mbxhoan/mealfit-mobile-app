@@ -27,10 +27,11 @@ import {
 } from "./domain.mjs";
 import imageCompression from "browser-image-compression";
 import Webcam from "webcam-easy";
-import { ApiError, apiRequest } from "./api-client.mjs";
+import { apiRequest as sendApiRequest } from "./api-client.mjs";
 import {
-  ackOutbox, commitState, deletePhoto as deleteLocalPhoto, failOutbox, getMeta,
-  getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
+  ackAppLog, ackOutbox, commitState, deletePhoto as deleteLocalPhoto, enqueueAppLog, failAppLog, failOutbox, getMeta, getOutbox,
+  getOrderPhotos as loadOrderPhotos, getPendingPhotos, hasPendingAppLogs, mergeRemote,
+  nextAppLog,
   nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, writeStateSnapshot
 } from "./local-store.mjs";
 
@@ -62,7 +63,10 @@ let routeDrag = null;
 let routeDragFrame = null;
 let toastTimer = null;
 let syncTimer = null;
+let appLogTimer = null;
 let syncRunning = false;
+let appLogRunning = false;
+let lastAppLogSentAt = 0;
 let photoSyncRunning = false;
 let sheetSyncRunning = false;
 let orderSyncRunningId = null;
@@ -100,6 +104,41 @@ const addressLabel = value => safe(String(value ?? "").replace(/^Địa chỉ\s+
 const paymentRecipient = { bank: "VIB", account: "865884858", name: "Phạm Thị Linh Uyên" };
 const dateLabel = value => new Intl.DateTimeFormat("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(value));
 const timeLabel = value => new Intl.DateTimeFormat("vi-VN", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+
+function scheduleAppLogSync(delay = 1_100) {
+  if (!user || !navigator.onLine) return;
+  clearTimeout(appLogTimer);
+  appLogTimer = setTimeout(() => void syncQueued(), delay);
+}
+
+function recordClientLog(type, api, description, details = {}) {
+  if (!user || api === "/api/log") return;
+  void enqueueAppLog({ type, api, description, details }, user.id)
+    .then(() => scheduleAppLogSync())
+    .catch(() => {});
+}
+
+async function apiRequest(path, options = {}) {
+  const api = String(path).split("?", 1)[0];
+  const method = String(options.method || "GET").toUpperCase();
+  const startedAt = performance.now();
+  try {
+    const result = await sendApiRequest(path, options);
+    if (api !== "/api/log" && api !== "/api/ping") {
+      recordClientLog("info", `${method} ${api}`, method === "GET" ? "Đọc dữ liệu thành công" : "Yêu cầu ứng dụng thành công", { durationMs: Math.round(performance.now() - startedAt) });
+    }
+    return result;
+  } catch (error) {
+    if (api !== "/api/log") {
+      recordClientLog("error", `${method} ${api}`, "Yêu cầu ứng dụng thất bại", {
+        status: Number(error.status) || 0,
+        durationMs: Math.round(performance.now() - startedAt),
+        errorCode: String(error.code || "API_ERROR")
+      });
+    }
+    throw error;
+  }
+}
 
 const iconPaths = {
   arrow: '<path d="m15 18-6-6 6-6"/><path d="M20 12H9"/>',
@@ -151,7 +190,7 @@ function updateNetworkIndicator() {
   indicator.className = `network-indicator signal-${signal}`;
   indicator.setAttribute("aria-label", user ? `Kiểm tra API · ${networkLabels[signal]}` : networkLabels[signal]);
 }
-window.addEventListener("online", updateNetworkIndicator);
+window.addEventListener("online", () => { updateNetworkIndicator(); void syncQueued(); });
 window.addEventListener("offline", updateNetworkIndicator);
 networkConnection?.addEventListener?.("change", updateNetworkIndicator);
 
@@ -642,6 +681,7 @@ function persistLastView() {
 function navigate(view) {
   modal = null;
   viewStack.push(view);
+  recordClientLog("info", "app:navigate", `Mở màn hình ${view.name}`);
   render();
   persistLastView();
   window.scrollTo?.(0, 0);
@@ -649,7 +689,10 @@ function navigate(view) {
 
 function back() {
   if (modal) { modal = null; render(); return; }
-  if (viewStack.length > 1) viewStack.pop();
+  if (viewStack.length > 1) {
+    viewStack.pop();
+    recordClientLog("info", "app:back", "Quay về màn hình trước");
+  }
   render();
   persistLastView();
 }
@@ -723,6 +766,7 @@ async function updateState(next, message) {
   }
   state = normalized;
   lastPersistedState = cloneState(state);
+  recordClientLog("info", "app:update", "Đã lưu thay đổi trên thiết bị");
   render();
   if (message) flash(`${message} · Đã lưu trên thiết bị`);
   void syncQueued();
@@ -777,6 +821,44 @@ async function syncQueued() {
   } finally {
     syncRunning = false;
     if (needsRender) render();
+    void syncQueuedAppLog();
+  }
+}
+
+async function syncQueuedAppLog() {
+  if (!user || !navigator.onLine || syncRunning || appLogRunning) return;
+  const ownerId = user.id;
+  try {
+    const operations = await getOutbox(ownerId);
+    if (operations.some(item => !["conflict", "done"].includes(item.status))) return;
+    if ((await getPendingPhotos()).length || (await getMeta(`media-deletes:${ownerId}`) || []).length) return;
+    const lastSent = Number(await getMeta(`lastAppLogSentAt:${ownerId}`)) || 0;
+    const wait = 1_100 - (Date.now() - lastSent);
+    if (wait > 0) { scheduleAppLogSync(wait); return; }
+    const item = await nextAppLog(ownerId);
+    if (!item) {
+      if (await hasPendingAppLogs(ownerId)) scheduleAppLogSync(60_000);
+      return;
+    }
+    appLogRunning = true;
+    try {
+      await sendApiRequest("/api/log", {
+        method: "POST",
+        body: { type: item.type, api: item.api, description: item.description, details: item.details }
+      });
+      const sentAt = Date.now();
+      await setMeta(`lastAppLogSentAt:${ownerId}`, sentAt);
+      lastAppLogSentAt = sentAt;
+      await ackAppLog(item.id);
+    } catch {
+      scheduleAppLogSync(await failAppLog(item.id));
+      return;
+    } finally {
+      appLogRunning = false;
+    }
+    if (await hasPendingAppLogs(ownerId)) scheduleAppLogSync(Math.max(0, 1_100 - (Date.now() - lastAppLogSentAt)));
+  } catch {
+    scheduleAppLogSync(12_000);
   }
 }
 
@@ -902,6 +984,7 @@ async function refreshAccounts() {
 async function activateUser(nextUser, { restoreView = true, refresh = true } = {}) {
   user = nextUser;
   role = nextUser.role;
+  recordClientLog("info", "app:session", "Đã mở phiên ứng dụng");
   accounts[user.id] = { id: user.id, name: user.name, role: user.role };
   await setMeta("lastUser", user.id);
   state = normalizeState(await readState(emptyState(), user.id));

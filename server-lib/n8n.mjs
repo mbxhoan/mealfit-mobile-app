@@ -50,6 +50,38 @@ export function sheetId() {
   return requireEnv("N8N_SHEET_ID", "Chưa chọn Google Sheet cho môi trường này.");
 }
 
+const sheetCell = (value, limit) => {
+  const text = String(value ?? "").slice(0, limit);
+  return /^[=+\-@]/.test(text.trimStart()) ? `'${text}` : text;
+};
+
+export function appLogPayload(input, user, id = sheetId()) {
+  if (!input || !["info", "error"].includes(input.type)) throw new AppError(400, "INVALID_LOG_TYPE", "Loại log chỉ được là info hoặc error.");
+  const source = input.details && typeof input.details === "object" && !Array.isArray(input.details) ? input.details : {};
+  const details = {};
+  if (Number.isInteger(source.status) && source.status >= 0 && source.status <= 599) details.status = source.status;
+  if (Number.isFinite(source.durationMs) && source.durationMs >= 0) details.durationMs = Math.round(source.durationMs);
+  if (typeof source.errorCode === "string") details.errorCode = source.errorCode.slice(0, 80);
+  return {
+    sheet_id: id,
+    sheet_name: "app_logs",
+    user: sheetCell(user?.name || user?.id || "unknown", 100),
+    api: sheetCell(input.api || "app", 120),
+    description: sheetCell(input.description || "Hoạt động ứng dụng", 240),
+    type: input.type,
+    other: JSON.stringify(details)
+  };
+}
+
+export async function pushAppLog(input, user) {
+  const body = appLogPayload(input, user);
+  return n8nRequest("log", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+}
+
 export async function fetchSheetOrders({ cursor = "", limit = 100, modifiedSince = "", shipper = "" } = {}) {
   const params = new URLSearchParams({ sheet_id: sheetId(), limit: String(Math.max(1, Math.min(500, limit))) });
   if (cursor) params.set("cursor", cursor);

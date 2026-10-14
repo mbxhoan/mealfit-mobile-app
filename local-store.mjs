@@ -1,5 +1,5 @@
 const DB_NAME = "mealfit-prototype";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 let databasePromise;
 
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -24,6 +24,7 @@ export function openLocalDb() {
         outbox.createIndex("createdAt", "createdAt", { unique: false });
       }
       if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "key" });
+      if (!db.objectStoreNames.contains("logs")) db.createObjectStore("logs", { keyPath: "id" });
     };
     request.onsuccess = () => {
       request.result.onversionchange = () => request.result.close();
@@ -37,6 +38,10 @@ export function openLocalDb() {
 export function shouldRetryInflight(item, now = Date.now()) {
   const startedAt = Number(item?.updatedAt || item?.createdAt);
   return item?.status === "inflight" && Number.isFinite(startedAt) && now - startedAt >= 60_000;
+}
+
+export function appLogRetryDelay(attempts) {
+  return Math.min(300_000, 1_000 * (2 ** Math.min(Math.max(0, Number(attempts) || 0), 8)));
 }
 
 function complete(transaction) {
@@ -209,6 +214,64 @@ export async function failOutbox(operationId, conflict = false) {
   const item = await requestValue(store.get(operationId));
   if (item) { item.status = conflict ? "conflict" : "queued"; store.put(item); }
   await complete(tx);
+}
+
+export async function enqueueAppLog(log, ownerId) {
+  if (!["info", "error"].includes(log?.type)) throw new Error("Loại log không hợp lệ.");
+  const db = await openLocalDb();
+  const tx = db.transaction("logs", "readwrite");
+  tx.objectStore("logs").put({
+    id: crypto.randomUUID(), ownerId, type: log.type,
+    api: String(log.api || "app").slice(0, 120),
+    description: String(log.description || "Hoạt động ứng dụng").slice(0, 240),
+    details: log.details && typeof log.details === "object" && !Array.isArray(log.details) ? clone(log.details) : {},
+    createdAt: Date.now(), status: "queued", attempts: 0, nextAttemptAt: 0
+  });
+  await complete(tx);
+}
+
+export async function nextAppLog(ownerId, now = Date.now()) {
+  const db = await openLocalDb();
+  const tx = db.transaction("logs", "readwrite");
+  const store = tx.objectStore("logs");
+  const all = await requestValue(store.getAll());
+  for (const item of all) if (shouldRetryInflight(item, now)) { item.status = "queued"; store.put(item); }
+  if (all.some(item => item.status === "inflight")) { await complete(tx); return null; }
+  const values = all.filter(item => item.ownerId === ownerId).sort((a, b) => a.createdAt - b.createdAt);
+  const item = values.find(value => value.status === "queued" && Number(value.nextAttemptAt || 0) <= now);
+  if (item) { item.status = "inflight"; item.updatedAt = now; store.put(item); }
+  await complete(tx);
+  return item ? clone(item) : null;
+}
+
+export async function hasPendingAppLogs(ownerId) {
+  const db = await openLocalDb();
+  const values = await requestValue(db.transaction("logs", "readonly").objectStore("logs").getAll());
+  return values.some(item => item.ownerId === ownerId);
+}
+
+export async function ackAppLog(id) {
+  const db = await openLocalDb();
+  const tx = db.transaction("logs", "readwrite");
+  tx.objectStore("logs").delete(id);
+  await complete(tx);
+}
+
+export async function failAppLog(id) {
+  const db = await openLocalDb();
+  const tx = db.transaction("logs", "readwrite");
+  const store = tx.objectStore("logs");
+  const item = await requestValue(store.get(id));
+  let retryAfter = 1_000;
+  if (item) {
+    item.attempts = Number(item.attempts || 0) + 1;
+    retryAfter = appLogRetryDelay(item.attempts);
+    item.status = "queued";
+    item.nextAttemptAt = Date.now() + retryAfter;
+    store.put(item);
+  }
+  await complete(tx);
+  return retryAfter;
 }
 
 export async function getOutbox(userId) {

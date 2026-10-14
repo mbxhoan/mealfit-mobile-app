@@ -1,7 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fetchSheetOrders, fetchSheetOrdersForShippers, n8nRequest } from "./n8n.mjs";
+import { appLogPayload, fetchSheetOrders, fetchSheetOrdersForShippers, n8nRequest } from "./n8n.mjs";
 import { recordBatches } from "./sync.mjs";
+
+test("app logs only accept supported types and always target the fixed sheet", () => {
+  const payload = appLogPayload({ type: "error", api: "=POST /api/operations", description: "Failed", details: { status: 502, durationMs: 1200, errorCode: "UPSTREAM_ERROR", secret: "discard" } }, { id: "hoan", name: "Hoàn" }, "test-sheet");
+  assert.equal(payload.sheet_id, "test-sheet");
+  assert.equal(payload.sheet_name, "app_logs");
+  assert.equal(payload.type, "error");
+  assert.equal(payload.api, "'=POST /api/operations");
+  assert.deepEqual(JSON.parse(payload.other), { status: 502, durationMs: 1200, errorCode: "UPSTREAM_ERROR" });
+  assert.throws(() => appLogPayload({ type: "debug" }, { name: "Hoàn" }, "test-sheet"), error => error.code === "INVALID_LOG_TYPE");
+});
 
 test("n8n authorization failures identify the webhook HTTP status", async t => {
   const originalFetch = globalThis.fetch;

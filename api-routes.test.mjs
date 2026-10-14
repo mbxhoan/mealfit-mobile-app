@@ -28,6 +28,7 @@ test("existing API paths rewrite to their consolidated functions", () => {
     ["/api/auth/session", "/api/auth?action=session"],
     ["/api/orders/:code", "/api/orders?code=:code"],
     ["/api/media/:id", "/api/media?id=:id"],
+    ["/api/log", "/api/diagnostics?view=log"],
     ["/api/health", "/api/ping?database=1"],
     ["/api/cron/maintenance", "/api/refresh"]
   ];

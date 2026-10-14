@@ -15,6 +15,7 @@
     { "source": "/api/auth/session", "destination": "/api/auth?action=session" },
     { "source": "/api/orders/:code", "destination": "/api/orders?code=:code" },
     { "source": "/api/media/:id", "destination": "/api/media?id=:id" },
+    { "source": "/api/log", "destination": "/api/diagnostics?view=log" },
     { "source": "/api/health", "destination": "/api/ping?database=1" },
     { "source": "/api/cron/maintenance", "destination": "/api/refresh" }
   ],
