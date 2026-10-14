@@ -84,8 +84,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .topbar .network-indicator svg { width: 16px; height: 16px; }
 .icon-button:active, .button:active, .menu-card:active, .list-card:active { transform: scale(.985); }
 .icon-button svg, .menu-card svg, .button svg, .inline-icon svg, .list-card svg { width: 20px; height: 20px; }
-.page { flex: 1; width: 100%; padding: 22px 18px calc(28px + env(safe-area-inset-bottom)); animation: page-in .16s ease-out both; }
-@keyframes page-in { from { opacity: .55; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+.page { flex: 1; width: 100%; padding: 22px 18px calc(28px + env(safe-area-inset-bottom)); }
 .eyebrow { margin: 0 0 7px; color: var(--muted); font-size: 12px; font-weight: 650; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 24px 0 12px; font-size: 16px; font-weight: 700; }
 .section-title small { color: var(--muted); font-size: 12px; font-weight: 500; }
@@ -253,8 +252,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .select-order.selected .checkmark { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 5px #fff; }
 .selection-count { padding: 12px 0; color: var(--muted); font-size: 13px; }
 .route-page, .order-page { padding: 12px 12px calc(24px + env(safe-area-inset-bottom)); }
-.order-page { padding-bottom: calc(156px + env(safe-area-inset-bottom)); animation: order-page-in .16s ease-out both; }
-@keyframes order-page-in { from { opacity: .55; } to { opacity: 1; } }
+.order-page { padding-bottom: calc(156px + env(safe-area-inset-bottom)); }
 .session-meta, .order-meta { min-height: 28px; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .session-meta > span:first-child { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .session-meta .status, .order-meta .status { min-height: 24px; padding: 4px 8px; }
@@ -280,7 +278,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .route-tab.active { background: #fff; color: var(--ink); box-shadow: 0 1px 3px #20212414; }
 .route-list, .session-order-list { display: grid; gap: 7px; }
 .shift-group { min-width: 0; }
-.shift-heading { min-height: 28px; padding: 4px 2px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.shift-group + .shift-group { padding-top: 8px; border-top: 1px solid var(--line); }
+.shift-heading { min-height: 36px; margin-bottom: 6px; padding: 7px 10px; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; background: var(--accent-soft); color: #a33f20; font-size: 13px; font-weight: 750; }
 .shift-complete { margin: 2px 0; border: 1px solid #cfe9db; border-radius: 12px; background: #f8fcf9; }
 .shift-complete > summary, .completed-stops > summary { min-height: 38px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--green); font-size: 11px; font-weight: 700; cursor: pointer; list-style: none; }
 .shift-complete > summary::-webkit-details-marker, .completed-stops > summary::-webkit-details-marker { display: none; }

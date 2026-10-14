@@ -74,6 +74,7 @@ let activityLoading = false;
 let activityError = "";
 let webcam = null;
 const photoUrls = new Map();
+let hydratedOrderId = null;
 const app = document.querySelector("#app");
 
 const currentView = () => viewStack.at(-1);
@@ -574,6 +575,7 @@ function renderModal() {
 function render() {
   const view = currentView();
   if (!role || view.name === "login") {
+    hydratedOrderId = null;
     app.innerHTML = loginScreen();
     return;
   }
@@ -594,7 +596,12 @@ function render() {
   }
   app.innerHTML = appShell(content, options);
   if (view.name === "session") routeAnnouncement = "";
-  if (view.name === "order") hydratePhotos(view.orderId);
+  if (view.name === "order") {
+    if (hydratedOrderId !== view.orderId) {
+      hydratedOrderId = view.orderId;
+      void hydratePhotos(view.orderId);
+    }
+  } else hydratedOrderId = null;
   requestAnimationFrame(updateContinueRouteButton);
 }
 
@@ -695,11 +702,15 @@ async function updateState(next, message) {
 async function syncQueued() {
   if (!user || !navigator.onLine || syncRunning) return;
   syncRunning = true;
-  render();
+  let hasOperations = false;
+  let needsRender = false;
+  const initialModal = modal;
   try {
     for (let attempt = 0; attempt < 4; attempt++) {
       const batch = await nextOutboxBatch(user.id, 40);
       if (!batch.length) break;
+      hasOperations = true;
+      if (!needsRender) { needsRender = true; render(); }
       const operations = batch.map(item => ({ operationId: item.id, type: item.type, entityId: item.entityId, baseRevision: item.baseRevision, payload: item.payload }));
       try {
         const result = await apiRequest("/api/operations", { method: "POST", body: { operations } });
@@ -725,15 +736,18 @@ async function syncQueued() {
     }
     await syncPendingPhotos();
     await syncPendingMediaDeletes();
-    state = normalizeState(await readState(emptyState(), user.id));
-    lastPersistedState = cloneState(state);
-    syncErrorShown = false;
-    render();
+    if (hasOperations) {
+      state = normalizeState(await readState(emptyState(), user.id));
+      lastPersistedState = cloneState(state);
+      syncErrorShown = false;
+    }
+    if (modal !== initialModal) needsRender = true;
   } catch (error) {
     if (!syncErrorShown) { syncErrorShown = true; showError(error.message); }
+    needsRender = true;
   } finally {
     syncRunning = false;
-    render();
+    if (needsRender) render();
   }
 }
 
@@ -1102,8 +1116,7 @@ async function deletePhoto(id) {
 }
 
 async function hydratePhotos(orderId) {
-  const target = document.querySelector(`[data-photo-order="${CSS.escape(orderId)}"]`);
-  if (!target) return;
+  if (!document.querySelector(`[data-photo-order="${CSS.escape(orderId)}"]`)) return;
   try {
     let photos = await getOrderPhotos(orderId);
     if (navigator.onLine && user) {
@@ -1126,6 +1139,8 @@ async function hydratePhotos(orderId) {
       } catch { /* keep the local photo cache available offline */ }
     }
     photos.sort((a, b) => a.createdAt - b.createdAt);
+    const target = document.querySelector(`[data-photo-order="${CSS.escape(orderId)}"]`);
+    if (!target) return;
     if (!target.isConnected) return;
     const count = target.closest(".photo-disclosure")?.querySelector("[data-photo-count]");
     if (count) count.textContent = `${photos.length}/5`;
@@ -1136,7 +1151,8 @@ async function hydratePhotos(orderId) {
       return `<div class="photo-tile"><img src="${photoUrls.get(photo.id)}" alt="Ảnh xác nhận"/><button class="photo-remove" data-action="delete-photo" data-id="${safe(photo.id)}" aria-label="Xóa ảnh" ${locked ? "disabled" : ""}>${icon("close", 15)}</button></div>`;
     }).join("");
   } catch {
-    if (target.isConnected) target.innerHTML = '<span class="fine-print">Không tải được ảnh đã lưu.</span>';
+    const target = document.querySelector(`[data-photo-order="${CSS.escape(orderId)}"]`);
+    if (target?.isConnected) target.innerHTML = '<span class="fine-print">Không tải được ảnh đã lưu.</span>';
   }
 }
 
