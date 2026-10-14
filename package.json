@@ -17,6 +17,7 @@
     "@neondatabase/serverless": "^1.2.0",
     "@vercel/blob": "^2.3.0",
     "@vercel/functions": "^2.2.0",
+    "@vercel/speed-insights": "^2.0.0",
     "browser-image-compression": "^2.0.2",
     "busboy": "^1.6.0",
     "webcam-easy": "^1.0.6"
