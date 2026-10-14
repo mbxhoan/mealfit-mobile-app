@@ -1,5 +1,7 @@
 # Vận hành Mealfit Shipping
 
+Local: `npm run dev` chạy Vite; để chạy Vercel Functions bằng `npm run dev:vercel`, cài CLI toàn cục bằng `npm i -g vercel`.
+
 ## Database và môi trường
 
 Tạo database Postgres riêng cho app rồi chạy `db/migrations/001_initial.sql`. Đặt các biến sau ở Vercel và local:
