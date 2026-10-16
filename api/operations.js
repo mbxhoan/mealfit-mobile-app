@@ -3,6 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { withTransaction } from "../server-lib/db.mjs";
+import { sheetShipperNames } from "../server-lib/accounts.mjs";
 import { DELIVERY_STATUSES, PAYMENT_STATUSES, PAYMENT_METHODS, validateOrderMutation } from "../server-lib/orders.mjs";
 import { queueUpstream, flushUpstream } from "../server-lib/upstream.mjs";
 
@@ -96,8 +97,18 @@ async function applySession(client, operation, user) {
   const currentRevision = Number(current?.revision || 0);
   if (Number(operation.baseRevision || 0) !== currentRevision) return { conflict: true, id, sessionId, revision: currentRevision };
   if (payload.orderIds.length) {
-    const assigned = await client.query("SELECT code FROM mealfit_orders WHERE code = ANY($1::text[]) AND assigned_user_id = $2", [payload.orderIds, ownerId]);
+    const shipperNames = sheetShipperNames(user).map(name => name.trim().toLocaleLowerCase("vi-VN"));
+    const assigned = await client.query(`SELECT code FROM mealfit_orders
+      WHERE code = ANY($1::text[]) AND (assigned_user_id = $2 OR (
+        (assigned_user_id IS NULL OR assigned_user_id = 'external')
+        AND lower(btrim(shipper_name)) = ANY($3::text[])))`, [payload.orderIds, ownerId, shipperNames]);
     if (assigned.rows.length !== payload.orderIds.length) throw new AppError(403, "SESSION_ORDER_FORBIDDEN", "Phiên chỉ được gồm các đơn đã nhận bởi tài khoản này.");
+    const repaired = await client.query(`UPDATE mealfit_orders SET assigned_user_id = $2
+      WHERE code = ANY($1::text[]) AND (assigned_user_id IS NULL OR assigned_user_id = 'external')
+        AND lower(btrim(shipper_name)) = ANY($3::text[]) RETURNING code`, [payload.orderIds, ownerId, shipperNames]);
+    if (repaired.rows.length) await client.query(`INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, detail)
+      SELECT $1, 'order', code, 'assignment-repair', '{"source":"session-sync"}'::jsonb
+      FROM unnest($2::text[]) AS code`, [user.id, repaired.rows.map(row => row.code)]);
   }
   const nextRevision = currentRevision + 1;
   const ownerName = current?.owner_id === user.id ? user.name : current?.payload?.ownerName || user.name;
