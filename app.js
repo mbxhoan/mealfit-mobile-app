@@ -96,7 +96,7 @@ const app = document.querySelector("#app");
 
 const currentView = () => viewStack.at(-1);
 const orderById = id => state.orders.find(order => order.id === id);
-const activeSession = () => state.sessions.find(session => session.id === state.activeSessionId && ["notStarted", "active", "paused"].includes(session.status));
+const activeSession = () => state.sessions.find(session => session.id === state.activeSessionId && !session.syncConflict && ["notStarted", "active", "paused"].includes(session.status));
 const isStaff = () => role === "admin" || role === "user";
 const canSeeOrder = order => role !== "shipper" || (Array.isArray(state.visibleOrderIds)
   ? state.visibleOrderIds.includes(order.id)
@@ -521,6 +521,7 @@ function elapsedLabel(durationMs) {
 function sessionScreen() {
   const view = currentView();
   const session = (view.sessionId && state.sessions.find(item => item.id === view.sessionId)) || activeSession();
+  if (session?.syncConflict) return `<main class="page"><div class="empty-state"><strong>Phiên cũ cần làm mới</strong><p>Phiên có ${session.orderIds.length} điểm giao không còn được gán đầy đủ cho tài khoản này. Dữ liệu phiên vẫn được giữ trên thiết bị.</p><button class="button full" data-action="new-session">Tạo phiên giao hàng mới</button></div></main>`;
   if (!session) {
     if (isStaff()) return staffSessionsScreen();
     const history = [...state.sessions].sort((a, b) => (b.startedAt || b.createdAt || 0) - (a.startedAt || a.createdAt || 0));
@@ -868,6 +869,7 @@ async function syncQueued() {
   render();
   let hasOperations = false;
   let syncFailure = null;
+  const sessionConflicts = new Set();
   try {
     for (let attempt = 0; attempt < 4; attempt++) {
       const batch = await nextOutboxBatch(user.id, 40);
@@ -895,17 +897,29 @@ async function syncQueued() {
         const byId = new Map(results.map(item => [item.id, item]));
         for (const item of batch) {
           const result = byId.get(item.id);
-          if (result?.conflict) await failOutbox(item.id, true);
+          if (result?.conflict) {
+            await failOutbox(item.id, true);
+            if (result.errorCode === "SESSION_ORDER_FORBIDDEN" && result.sessionId) sessionConflicts.add(result.sessionId);
+          }
           else if (result) await ackOutbox(item.id, result.revision);
           else await failOutbox(item.id, error.status === 409);
         }
-        syncFailure = error;
+        const onlyStaleSessionConflicts = error.code === "SESSION_ORDER_FORBIDDEN"
+          && results.some(result => result.errorCode === "SESSION_ORDER_FORBIDDEN")
+          && results.every(result => !result.conflict || result.errorCode === "SESSION_ORDER_FORBIDDEN");
+        syncFailure = onlyStaleSessionConflicts ? null : error;
         break;
       }
     }
     await syncPendingPhotos();
     await syncPendingMediaDeletes();
     if (hasOperations) {
+      if (sessionConflicts.size) {
+        const snapshot = await readState(emptyState(), user.id);
+        snapshot.sessions = snapshot.sessions.map(session => sessionConflicts.has(session.id) ? { ...session, syncConflict: true } : session);
+        if (sessionConflicts.has(snapshot.activeSessionId)) snapshot.activeSessionId = null;
+        await writeStateSnapshot(snapshot, user.id);
+      }
       state = normalizeState(await readState(emptyState(), user.id));
       lastPersistedState = cloneState(state);
       syncErrorShown = false;
@@ -916,9 +930,10 @@ async function syncQueued() {
     syncRunning = false;
     render();
   }
-  const pending = (await getOutbox(user.id)).filter(item => item.status !== "done");
+  const pending = (await getOutbox(user.id)).filter(item => !["done", "conflict"].includes(item.status));
   if (syncFailure) throw syncFailure;
   if (pending.length) throw new Error(`Còn ${pending.length} thay đổi chưa gửi được. Thử đồng bộ lại trước khi tải danh sách đơn.`);
+  return { sessionConflicts: [...sessionConflicts] };
 }
 
 async function syncQueuedAppLog() {
@@ -993,12 +1008,13 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   let pendingUpstream = 0;
   let sheetRefreshFailed = false;
   let syncError = null;
+  let sessionConflicts = [];
   try {
     try { await refreshAccounts(); } catch { /* order sync can use the authenticated account already loaded */ }
     if (sheet) {
       try { pendingUpstream = Number((await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 120_000 })).pendingUpstream) || 0; }
       catch (error) { if (error.status === 401) throw error; sheetRefreshFailed = true; }
-      try { await syncQueued(); }
+      try { sessionConflicts = (await syncQueued()).sessionConflicts; }
       catch (error) { if (error.status === 401) throw error; syncError = error; }
     }
     let cursor = null;
@@ -1017,10 +1033,22 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
       render();
     } while (cursor);
     const [sessions] = await Promise.all([apiRequest("/api/sessions")]);
-    state = normalizeState(await mergeRemote({ sessions: sessions.data || [] }, user.id));
+    const remoteSessions = sessions.data || [];
+    const conflictedSessionIds = new Set([
+      ...sessionConflicts,
+      ...state.sessions.filter(session => session.syncConflict).map(session => session.id)
+    ]);
+    state = normalizeState(await mergeRemote({ sessions: remoteSessions }, user.id));
     if (role === "shipper" && shipperSnapshot) {
-      for (const session of state.sessions) {
-        if (["notStarted", "active", "paused"].includes(session.status)) for (const id of session.orderIds || []) visibleOrderIds.add(id);
+      if (conflictedSessionIds.size) {
+        state.sessions = state.sessions.map(session => conflictedSessionIds.has(session.id) ? { ...session, syncConflict: true } : session);
+        if (conflictedSessionIds.has(state.activeSessionId)) state.activeSessionId = null;
+        state = normalizeState(state);
+      }
+      for (const session of remoteSessions) {
+        if (!conflictedSessionIds.has(session.id) && ["notStarted", "active", "paused"].includes(session.status) && !session.syncConflict) {
+          for (const id of session.orderIds || []) visibleOrderIds.add(id);
+        }
       }
       state.visibleOrderIds = [...visibleOrderIds];
       await writeStateSnapshot(state, user.id);
@@ -1039,7 +1067,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   } finally {
     if (sheet) { sheetSyncRunning = false; render(); }
   }
-  return { pendingUpstream, sheetRefreshFailed, syncError };
+  return { pendingUpstream, sheetRefreshFailed, syncError, sessionConflicts };
 }
 
 async function pullChanges() {
@@ -1595,6 +1623,7 @@ app.addEventListener("click", async event => {
       const result = await pullRemoteOrders({ sheet: true, force: true });
       void syncQueuedAppLog();
       if (result.syncError) showError(result.syncError);
+      else if (result.sessionConflicts.length) flash("Đã làm mới danh sách đơn. Phiên cũ được giữ trong lịch sử trên thiết bị.");
       else flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã làm mới từ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đã làm mới dữ liệu đơn hàng.");
     }
     catch (error) { showError(error); }
@@ -1621,6 +1650,7 @@ app.addEventListener("click", async event => {
         const result = await pullRemoteOrders({ sheet: true, force: true });
         void syncQueuedAppLog();
         if (result.syncError) showError(result.syncError);
+        else if (result.sessionConflicts.length) flash("Đã làm mới danh sách đơn. Phiên cũ được giữ trong lịch sử trên thiết bị.");
         else flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã đồng bộ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đồng bộ đã hoàn tất.");
       }
     } catch (error) { if (error.status === 401) void logout(); else showError(error); }

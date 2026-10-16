@@ -104,8 +104,8 @@ export function normalizeState(state) {
     normalized.orderIds = sortPendingByShift(normalized.orderIds, normalized.shifts, normalized.legs);
     return normalized;
   });
-  const active = sessions.find(session => session.id === state.activeSessionId && OPEN_SESSION_STATUSES.includes(session.status))
-    || sessions.find(session => OPEN_SESSION_STATUSES.includes(session.status));
+  const active = sessions.find(session => session.id === state.activeSessionId && !session.syncConflict && OPEN_SESSION_STATUSES.includes(session.status))
+    || sessions.find(session => !session.syncConflict && OPEN_SESSION_STATUSES.includes(session.status));
   return { ...state, sessions, activeSessionId: active?.id ?? null };
 }
 

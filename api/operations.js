@@ -23,7 +23,9 @@ async function applyOrder(client, operation, user) {
   const found = await client.query("SELECT * FROM mealfit_orders WHERE code = $1 FOR UPDATE", [code]);
   const current = found.rows[0];
   if (!current) throw new AppError(404, "ORDER_NOT_FOUND", "Không tìm thấy đơn hàng cần cập nhật.");
-  if (user.role === "shipper" && current.assigned_user_id !== user.id) throw new AppError(403, "ORDER_FORBIDDEN", "Shipper chỉ được cập nhật đơn đã nhận.");
+  if (user.role === "shipper" && current.assigned_user_id !== user.id) {
+    return { id, code, conflict: true, errorCode: "ORDER_FORBIDDEN", revision: Number(current.revision) };
+  }
   if (Number(operation.baseRevision) !== Number(current.revision)) {
     await client.query(`INSERT INTO mealfit_conflicts (conflict_id, order_code, app_revision, sheet_revision, app_payload, sheet_payload)
       VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb) ON CONFLICT (conflict_id) DO NOTHING`,
@@ -104,7 +106,9 @@ async function applySession(client, operation, user) {
         AND (assigned_user_id IS NULL OR assigned_user_id = 'external' OR NOT EXISTS (
           SELECT 1 FROM mealfit_accounts account WHERE account.id = mealfit_orders.assigned_user_id
         ))))`, [payload.orderIds, ownerId, shipperNames]);
-    if (assigned.rows.length !== payload.orderIds.length) throw new AppError(403, "SESSION_ORDER_FORBIDDEN", "Phiên chỉ được gồm các đơn đã nhận bởi tài khoản này.");
+    if (assigned.rows.length !== payload.orderIds.length) {
+      return { id, sessionId, conflict: true, errorCode: "SESSION_ORDER_FORBIDDEN", revision: currentRevision };
+    }
     const repaired = await client.query(`UPDATE mealfit_orders SET assigned_user_id = $2
       WHERE code = ANY($1::text[]) AND assigned_user_id IS DISTINCT FROM $2
         AND lower(btrim(shipper_name)) = ANY($3::text[])
@@ -147,7 +151,17 @@ export default handler(async (req, res) => {
   });
   const conflict = results.find(result => result.conflict);
   if (conflict) {
-    send(res, 409, { error: { code: "REVISION_CONFLICT", message: "Đơn hoặc phiên đã được cập nhật ở nơi khác. Làm mới dữ liệu để xử lý xung đột." }, conflict, results });
+    waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
+    const sessionConflict = conflict.errorCode === "SESSION_ORDER_FORBIDDEN";
+    send(res, 409, {
+      error: {
+        code: conflict.errorCode || "REVISION_CONFLICT",
+        message: sessionConflict
+          ? "Phiên cũ có đơn không còn được giao cho tài khoản này. Danh sách đơn đã được làm mới; phiên được giữ trong lịch sử trên thiết bị."
+          : "Đơn hoặc phiên đã được cập nhật ở nơi khác. Làm mới dữ liệu để xử lý xung đột."
+      },
+      conflict, results
+    });
     return;
   }
   waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));

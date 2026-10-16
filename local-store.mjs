@@ -150,7 +150,7 @@ export async function mergeRemote({ orders = [], sessions = [] }, userId) {
       const current = items.get(item.id);
       const blocked = pending.filter(operation => operation.status !== "done");
       if (blocked.some(operation => operation.status !== "conflict")) continue;
-      if (blocked.length && Number(item.serverRevision || 0) <= Number(current?.serverRevision || 0)) continue;
+      if (blocked.length && Number(item.serverRevision || 0) < Number(current?.serverRevision || 0)) continue;
       if (blocked.length) for (const operation of blocked) outbox.delete(operation.id);
       if (type === "session" && item.deleted) { items.delete(item.id); continue; }
       if (!current || Number(item.serverRevision || 0) >= Number(current.serverRevision || 0)) items.set(item.id, clone(item));
