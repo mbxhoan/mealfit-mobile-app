@@ -984,12 +984,14 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   if (sheet) { sheetSyncRunning = true; render(); }
   let pendingUpstream = 0;
   let sheetRefreshFailed = false;
+  let syncError = null;
   try {
-    if (sheet) await syncQueued();
     try { await refreshAccounts(); } catch { /* order sync can use the authenticated account already loaded */ }
     if (sheet) {
       try { pendingUpstream = Number((await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 120_000 })).pendingUpstream) || 0; }
       catch (error) { if (error.status === 401) throw error; sheetRefreshFailed = true; }
+      try { await syncQueued(); }
+      catch (error) { if (error.status === 401) throw error; syncError = error; }
     }
     let cursor = null;
     let first = true;
@@ -1029,7 +1031,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   } finally {
     if (sheet) { sheetSyncRunning = false; render(); }
   }
-  return { pendingUpstream, sheetRefreshFailed };
+  return { pendingUpstream, sheetRefreshFailed, syncError };
 }
 
 async function pullChanges() {
@@ -1584,7 +1586,8 @@ app.addEventListener("click", async event => {
     try {
       const result = await pullRemoteOrders({ sheet: true, force: true });
       void syncQueuedAppLog();
-      flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã làm mới từ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đã làm mới dữ liệu đơn hàng.");
+      if (result.syncError) showError(result.syncError);
+      else flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã làm mới từ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đã làm mới dữ liệu đơn hàng.");
     }
     catch (error) { showError(error); }
     finally { setButtonBusy(button, false); }
@@ -1609,7 +1612,8 @@ app.addEventListener("click", async event => {
       else {
         const result = await pullRemoteOrders({ sheet: true, force: true });
         void syncQueuedAppLog();
-        flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã đồng bộ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đồng bộ đã hoàn tất.");
+        if (result.syncError) showError(result.syncError);
+        else flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã đồng bộ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đồng bộ đã hoàn tất.");
       }
     } catch (error) { if (error.status === 401) void logout(); else showError(error); }
     finally { if (detailOrderId) { orderSyncRunningId = null; render(); } }

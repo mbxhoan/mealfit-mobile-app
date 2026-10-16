@@ -1,4 +1,4 @@
-const CACHE = "mealfit-shell-v2";
+const CACHE = "mealfit-shell-v3";
 const SHELL = ["/", "/manifest.webmanifest", "/logo-transparent.png", "/mealfit-payment-qr.png"];
 
 self.addEventListener("install", event => {
@@ -23,11 +23,11 @@ self.addEventListener("fetch", event => {
     }).catch(async () => (await caches.match("/")) || Response.error()));
     return;
   }
-  event.respondWith(caches.match(request).then(cached => cached || fetch(request).then(response => {
+  event.respondWith(fetch(request).then(response => {
     if (response.ok) {
       const copy = response.clone();
       event.waitUntil(caches.open(CACHE).then(cache => cache.put(request, copy)));
     }
     return response;
-  })));
+  }).catch(async () => (await caches.match(request)) || Response.error()));
 });
