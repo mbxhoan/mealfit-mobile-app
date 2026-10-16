@@ -28,7 +28,7 @@ export function assignedUserId(value) {
 }
 
 export function canReuseClaim(order, userId) {
-  return order?.assigned_user_id === userId && order?.shipping_status === "Chưa giao hàng";
+  return order?.assigned_user_id === userId;
 }
 
 export function normalizeSheetOrder(row, extra = {}) {

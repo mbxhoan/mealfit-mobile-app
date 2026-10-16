@@ -100,12 +100,17 @@ async function applySession(client, operation, user) {
     const shipperNames = sheetShipperNames(user).map(name => name.trim().toLocaleLowerCase("vi-VN"));
     const assigned = await client.query(`SELECT code FROM mealfit_orders
       WHERE code = ANY($1::text[]) AND (assigned_user_id = $2 OR (
-        (assigned_user_id IS NULL OR assigned_user_id = 'external')
-        AND lower(btrim(shipper_name)) = ANY($3::text[])))`, [payload.orderIds, ownerId, shipperNames]);
+        lower(btrim(shipper_name)) = ANY($3::text[])
+        AND (assigned_user_id IS NULL OR assigned_user_id = 'external' OR NOT EXISTS (
+          SELECT 1 FROM mealfit_accounts account WHERE account.id = mealfit_orders.assigned_user_id
+        ))))`, [payload.orderIds, ownerId, shipperNames]);
     if (assigned.rows.length !== payload.orderIds.length) throw new AppError(403, "SESSION_ORDER_FORBIDDEN", "Phiên chỉ được gồm các đơn đã nhận bởi tài khoản này.");
     const repaired = await client.query(`UPDATE mealfit_orders SET assigned_user_id = $2
-      WHERE code = ANY($1::text[]) AND (assigned_user_id IS NULL OR assigned_user_id = 'external')
-        AND lower(btrim(shipper_name)) = ANY($3::text[]) RETURNING code`, [payload.orderIds, ownerId, shipperNames]);
+      WHERE code = ANY($1::text[]) AND assigned_user_id IS DISTINCT FROM $2
+        AND lower(btrim(shipper_name)) = ANY($3::text[])
+        AND (assigned_user_id IS NULL OR assigned_user_id = 'external' OR NOT EXISTS (
+          SELECT 1 FROM mealfit_accounts account WHERE account.id = mealfit_orders.assigned_user_id
+        )) RETURNING code`, [payload.orderIds, ownerId, shipperNames]);
     if (repaired.rows.length) await client.query(`INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, detail)
       SELECT $1, 'order', code, 'assignment-repair', '{"source":"session-sync"}'::jsonb
       FROM unnest($2::text[]) AS code`, [user.id, repaired.rows.map(row => row.code)]);

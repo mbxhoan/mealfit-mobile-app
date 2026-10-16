@@ -30,14 +30,14 @@ export default handler(async (req, res) => {
       await client.query(`UPDATE mealfit_orders SET row_data = $1::jsonb, customer = $2, phone = $3, address = $4,
         ordered_at = $5, subtotal = $6, shipping_fee = $7, total = $8, paid_amount = $9, remaining_due = $10,
         payment_status = $11, shipping_status = $12, shipper_name = $13, assigned_user_id = $14,
-        note = $15, items = COALESCE($16::jsonb, items), source_revision = $17, revision = revision + 1, updated_at = now() WHERE code = $18`,
+        note = $15, items = COALESCE($16::jsonb, items), source_revision = GREATEST(source_revision, $17), revision = revision + 1, updated_at = now() WHERE code = $18`,
         [JSON.stringify(conflict.sheet_payload), order.customer, order.phone, order.address, order.date, order.subtotal, order.shippingFee, order.total, order.paidAmount, order.remainingDue, order.paymentStatus, order.deliveryStatus, order.shipperName || "Chưa phân công", order.assignedUserId, order.note, JSON.stringify(order.items || null), order.sourceRevision, conflict.order_code]);
     } else {
       const order = validateOrderMutation(conflict.app_payload);
       const nextRevision = Number(current.revision) + 1;
       await client.query(`UPDATE mealfit_orders SET shipping_status = $1, payment_status = $2, paid_amount = $3,
         remaining_due = $4, shipper_name = $5, note = $6, maps_url = $7, session_id = $8,
-        source_revision = $10, row_data = jsonb_set(row_data, '{revision}', to_jsonb($10::bigint), true),
+        source_revision = GREATEST(source_revision, $10), row_data = jsonb_set(row_data, '{revision}', to_jsonb($10::bigint), true),
         revision = $9, updated_at = now() WHERE code = $11`,
         [order.deliveryStatus, order.paymentStatus, order.paidAmount, order.paymentStatus === "Đã thanh toán" ? 0 : order.remainingDue,
           order.shipperName, order.note, order.mapsLink || "", order.sessionId || null, nextRevision, conflict.sheet_revision, conflict.order_code]);

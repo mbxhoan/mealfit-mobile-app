@@ -875,6 +875,14 @@ async function syncQueued() {
       hasOperations = true;
       const operations = batch.map(item => ({ operationId: item.id, type: item.type, entityId: item.entityId, baseRevision: item.baseRevision, payload: item.payload }));
       try {
+        if (user.role === "shipper") {
+          const claimCodes = [...new Set(batch.filter(item => item.type === "session")
+            .flatMap(item => item.payload.orderIds || [])
+            .filter(code => !orderById(code)?.assignedUserId))];
+          for (let offset = 0; offset < claimCodes.length; offset += 50) {
+            await apiRequest("/api/claim", { method: "POST", body: { codes: claimCodes.slice(offset, offset + 50) } });
+          }
+        }
         const result = await apiRequest("/api/operations", { method: "POST", body: { operations } });
         const byId = new Map((result.results || []).map(item => [item.id, item]));
         for (const item of batch) {

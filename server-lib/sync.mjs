@@ -7,6 +7,19 @@ export function recordBatches(records, size = 100) {
   return batches;
 }
 
+const sheetAmount = value => Number(String(value ?? "").replace(/[^\d-]/g, ""));
+
+export function sheetOrderMatchesPayload(row, body) {
+  if (!row || !body) return false;
+  const code = String(row["Mã đơn"] || row.code || "").trim();
+  return code === String(body.code || "").trim()
+    && String(row.Shipper ?? row.shipper ?? "").trim() === String(body.shipper ?? "").trim()
+    && sheetAmount(row["Đã thanh toán"] ?? row.total) === sheetAmount(body.total)
+    && String(row["Trạng thái đơn"] ?? row.payment_status ?? "") === String(body.payment_staus ?? "")
+    && String(row["Trạng thái giao hàng"] ?? row.shipping_status ?? "") === String(body.shipping_status ?? "")
+    && String(row["Ghi chú bởi shipper"] ?? row.note ?? "") === String(body.note ?? "");
+}
+
 export function sheetUpdateMismatches(updates, rows) {
   const latest = new Map();
   for (const update of updates) {
@@ -18,15 +31,11 @@ export function sheetUpdateMismatches(updates, rows) {
   const sheetOrders = new Map(rows.map(row => [String(row?.["Mã đơn"] || row?.code || "").trim(), row]));
   return [...latest].filter(([code, update]) => {
     const row = sheetOrders.get(code);
-    const body = update.request_body || {};
-    return !row
-      || Number(row.revision ?? row.Revision) !== Number(body.expected_revision) + 1
-      || String(row["Trạng thái giao hàng"] ?? row.shipping_status ?? "") !== String(body.shipping_status ?? "")
-      || String(row["Trạng thái đơn"] ?? row.payment_status ?? "") !== String(body.payment_staus ?? "");
+    return !sheetOrderMatchesPayload(row, { ...(update.request_body || {}), code });
   }).map(([code]) => code);
 }
 
-export async function importSheetOrders(rows) {
+export async function importSheetOrders(rows, { allowOutboxConflicts = false, allowOpenConflicts = false } = {}) {
   const orders = rows.map(row => normalizeSheetOrder(row)).filter(Boolean);
   if (!orders.length) return 0;
   const sql = getSql();
@@ -114,14 +123,14 @@ export async function importSheetOrders(rows) {
       assigned_user_id = EXCLUDED.assigned_user_id,
       note = EXCLUDED.note,
       items = COALESCE(EXCLUDED.items, mealfit_orders.items),
-      source_revision = CASE WHEN EXCLUDED.row_data ? 'revision' OR EXCLUDED.row_data ? 'Revision'
-        THEN EXCLUDED.source_revision ELSE mealfit_orders.source_revision END,
+      source_revision = GREATEST(mealfit_orders.source_revision, EXCLUDED.source_revision),
       revision = mealfit_orders.revision + 1,
       synced_at = now(),
       updated_at = now()
-    -- Legacy n8n rows may omit revisions; never replace an order with a queued app write.
+    -- Forced Sheet refreshes can import while keeping mismatched outbox payloads in conflict state.
     WHERE (EXCLUDED.source_revision > mealfit_orders.source_revision
-      OR (NOT (EXCLUDED.row_data ? 'revision' OR EXCLUDED.row_data ? 'Revision') AND (
+      OR ((EXCLUDED.source_revision = mealfit_orders.source_revision
+        OR NOT (EXCLUDED.row_data ? 'revision' OR EXCLUDED.row_data ? 'Revision')) AND (
         EXCLUDED.customer IS DISTINCT FROM mealfit_orders.customer
         OR EXCLUDED.phone IS DISTINCT FROM mealfit_orders.phone
         OR EXCLUDED.address IS DISTINCT FROM mealfit_orders.address
@@ -140,8 +149,10 @@ export async function importSheetOrders(rows) {
         OR (EXCLUDED.items IS NOT NULL AND mealfit_orders.items IS DISTINCT FROM EXCLUDED.items)
       )))
       AND NOT EXISTS (SELECT 1 FROM mealfit_upstream_outbox queued
-        WHERE queued.order_code = mealfit_orders.code AND queued.status IN ('queued', 'sending', 'failed', 'conflict'))
-      AND NOT EXISTS (SELECT 1 FROM mealfit_conflicts conflict WHERE conflict.order_code = mealfit_orders.code AND conflict.status = 'open')
+        WHERE queued.order_code = mealfit_orders.code
+          AND (queued.status IN ('queued', 'sending', 'failed') OR (${!allowOutboxConflicts} AND queued.status = 'conflict')))
+      AND (${allowOpenConflicts} OR NOT EXISTS (SELECT 1 FROM mealfit_conflicts conflict
+        WHERE conflict.order_code = mealfit_orders.code AND conflict.status = 'open'))
     RETURNING code
   `;
     if (changed.length) await sql`

@@ -2,7 +2,63 @@ import { randomUUID } from "node:crypto";
 import { withAdvisoryLock, withTransaction, getSql } from "./db.mjs";
 import { toN8nBody } from "./orders.mjs";
 import { sheetId, fetchSheetOrder, pushSheetOrder } from "./n8n.mjs";
-import { importSheetOrders } from "./sync.mjs";
+import { importSheetOrders, sheetOrderMatchesPayload } from "./sync.mjs";
+
+export async function reconcileUpstreamWithSheet(rows) {
+  const sheet = new Map(rows.map(row => [String(row?.["Mã đơn"] || row?.code || "").trim(), row]));
+  const codes = [...sheet.keys()].filter(Boolean);
+  if (!codes.length) return { confirmed: 0, conflicts: 0 };
+  return withAdvisoryLock(772_024_101, async client => {
+    const pending = await client.query(`SELECT DISTINCT ON (order_code)
+        operation_id, order_code, target_revision, request_body
+      FROM mealfit_upstream_outbox
+      WHERE order_code = ANY($1::text[]) AND status IN ('queued', 'sending', 'failed', 'conflict')
+      ORDER BY order_code, target_revision DESC, updated_at DESC`, [codes]);
+    let confirmed = 0;
+    let conflicts = 0;
+    for (const item of pending.rows) {
+      const matches = sheetOrderMatchesPayload(sheet.get(item.order_code), { ...item.request_body, code: item.order_code });
+      if (matches) {
+        const revision = Number(item.request_body.expected_revision) + 1;
+        await client.query(`UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now()
+          WHERE order_code = $1 AND status IN ('queued', 'sending', 'failed', 'conflict')`, [item.order_code]);
+        if (Number.isSafeInteger(revision)) await client.query(`UPDATE mealfit_orders
+          SET source_revision = GREATEST(source_revision, $2), synced_at = now()
+          WHERE code = $1`, [item.order_code, revision]);
+        confirmed++;
+      } else {
+        await client.query(`UPDATE mealfit_upstream_outbox SET status = 'conflict', last_error = 'SHEET_STATE_DIVERGED', updated_at = now()
+          WHERE order_code = $1 AND status IN ('queued', 'sending', 'failed')`, [item.order_code]);
+        const orderRows = await client.query("SELECT * FROM mealfit_orders WHERE code = $1 FOR UPDATE", [item.order_code]);
+        const order = orderRows.rows[0];
+        if (order) {
+          const body = item.request_body;
+          const paidAmount = Number(body.total) || 0;
+          const paymentStatus = String(body.payment_staus || order.payment_status);
+          const appPayload = {
+            id: order.code, customer: order.customer, phone: order.phone, address: order.address,
+            shipperName: body.shipper || order.shipper_name, total: Number(order.total), paidAmount,
+            remainingDue: paymentStatus === "Đã thanh toán" ? 0 : Math.max(0, Number(order.total) - paidAmount),
+            paymentStatus, deliveryStatus: body.shipping_status, note: body.note || "",
+            mapsLink: order.maps_url || "", sessionId: order.session_id || null,
+            payments: order.payments || [], items: order.items || [], assignedUserId: order.assigned_user_id,
+            sourceRevision: Number(order.source_revision) || 0
+          };
+          await client.query(`INSERT INTO mealfit_conflicts
+              (conflict_id, order_code, app_revision, sheet_revision, app_payload, sheet_payload)
+            SELECT $1, $2, $3, $4, $5::jsonb, $6::jsonb
+            WHERE NOT EXISTS (SELECT 1 FROM mealfit_conflicts WHERE order_code = $2 AND status = 'open')
+            ON CONFLICT (conflict_id) DO NOTHING`, [
+            `outbox-${item.operation_id}`, item.order_code, Number(order.revision) || 0,
+            Number(order.source_revision) || 0, JSON.stringify(appPayload), JSON.stringify(sheet.get(item.order_code))
+          ]);
+        }
+        conflicts++;
+      }
+    }
+    return { confirmed, conflicts };
+  });
+}
 
 export async function queueUpstream(client, operationId, order, revision) {
   await client.query("DELETE FROM mealfit_upstream_outbox WHERE order_code = $1 AND status = 'queued' AND attempts = 0", [order.id]);

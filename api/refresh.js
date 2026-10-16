@@ -6,7 +6,7 @@ import { sheetShipperNames } from "../server-lib/accounts.mjs";
 import { getSql } from "../server-lib/db.mjs";
 import { fetchSheetOrders, fetchSheetOrdersForShippers } from "../server-lib/n8n.mjs";
 import { importSheetOrders, markSheetPull, sheetUpdateMismatches } from "../server-lib/sync.mjs";
-import { flushUpstream } from "../server-lib/upstream.mjs";
+import { flushUpstream, reconcileUpstreamWithSheet } from "../server-lib/upstream.mjs";
 
 const TABLES = ["mealfit_accounts", "mealfit_orders", "mealfit_sessions", "mealfit_operations", "mealfit_payment_events", "mealfit_upstream_outbox", "mealfit_media", "mealfit_conflicts", "mealfit_audit_log", "mealfit_auth_attempts", "mealfit_sync_meta"];
 const REFRESH_COOLDOWN_MS = 10_000;
@@ -98,7 +98,7 @@ export default handler(async (req, res) => {
           WHERE order_row.code = outbox.order_code AND order_row.assigned_user_id = ${user.id}
         ))
       GROUP BY outbox.status`;
-    pendingCount = pending.reduce((sum, row) => sum + Number(row.count), 0);
+    pendingCount = pending.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
     conflictCount = pending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
     if (usedCache) {
       req.apiLogDetail = { stage: "cache", pending: pendingCount, conflicts: conflictCount };
@@ -111,9 +111,32 @@ export default handler(async (req, res) => {
       if (user.role === "shipper" && !shipperNames.length) throw new AppError(400, "SHIPPER_NAME_REQUIRED", "Tài khoản shipper chưa có tên để lọc đơn hàng.");
       const previousPull = meta[0]?.updated_at ? new Date(new Date(meta[0].updated_at).valueOf() - 120_000).toISOString() : "";
       stage = "n8n-fetch";
-      const pull = await fetchSheetOrdersForShippers({ shippers: shipperNames, limit: 500, modifiedSince: user.role === "shipper" ? "" : previousPull });
-      received = pull.received;
+      // The live webhook filters one shipper per request; read once and restrict before importing.
+      const pull = await fetchSheetOrdersForShippers({ shippers: user.role === "shipper" ? [""] : shipperNames, limit: 500, modifiedSince: user.role === "shipper" ? "" : previousPull });
+      const allowedShippers = user.role === "shipper"
+        ? new Set(shipperNames.map(name => name.trim().toLocaleLowerCase("vi-VN")))
+        : null;
+      const rows = allowedShippers
+        ? pull.rows.filter(row => allowedShippers.has(String(row?.Shipper || "").trim().toLocaleLowerCase("vi-VN")))
+        : pull.rows;
+      received = rows.length;
       pages = pull.pages;
+      if (body.force === true) {
+        await reconcileUpstreamWithSheet(rows);
+        const reconciledPending = await sql`SELECT outbox.status, count(*)::int AS count
+          FROM mealfit_upstream_outbox AS outbox
+          WHERE outbox.status IN ('queued', 'sending', 'failed', 'conflict')
+            AND (${user.role !== "shipper"} OR EXISTS (
+              SELECT 1 FROM mealfit_operations AS operation
+              WHERE operation.operation_id = outbox.operation_id AND operation.actor_id = ${user.id}
+            ) OR EXISTS (
+              SELECT 1 FROM mealfit_orders AS order_row
+              WHERE order_row.code = outbox.order_code AND order_row.assigned_user_id = ${user.id}
+            ))
+          GROUP BY outbox.status`;
+        pendingCount = reconciledPending.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
+        conflictCount = reconciledPending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
+      }
       stage = "sheet-verification";
       const sentUpdates = await sql`SELECT DISTINCT ON (outbox.order_code)
           outbox.order_code, outbox.request_body, outbox.target_revision
@@ -123,15 +146,15 @@ export default handler(async (req, res) => {
           AND (${previousPullAt === null} OR outbox.updated_at > ${previousPullAt}::timestamptz)
           AND (${user.role !== "shipper"} OR operation.actor_id = ${user.id})
         ORDER BY outbox.order_code, outbox.target_revision DESC, outbox.updated_at DESC`;
-      const mismatches = sheetUpdateMismatches(sentUpdates, pull.rows);
+      const mismatches = sheetUpdateMismatches(sentUpdates, rows);
       if (mismatches.length) {
         req.apiLogDetail = { stage, mismatches: mismatches.length, codes: mismatches.slice(0, 5) };
         throw new AppError(502, "SHEET_CONFIRMATION_MISMATCH", `Google Sheet chưa xác nhận phiên bản hoặc trạng thái mới cho ${mismatches.slice(0, 5).join(", ")}. Vui lòng thử đồng bộ lại.`);
       }
       stage = "postgres-import";
-      count = await importSheetOrders(pull.rows);
+      count = await importSheetOrders(rows, { allowOutboxConflicts: body.force === true, allowOpenConflicts: body.force === true });
       if (user.role === "shipper") {
-        const codes = [...new Set(pull.rows.map(row => String(row?.["Mã đơn"] || row?.code || "").trim()).filter(Boolean))];
+        const codes = [...new Set(rows.map(row => String(row?.["Mã đơn"] || row?.code || "").trim()).filter(Boolean))];
         await sql`INSERT INTO mealfit_sync_meta (key, value, updated_at)
           VALUES (${`shipper-order-snapshot:${user.id}`}, ${JSON.stringify({ codes })}::jsonb, now())
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
