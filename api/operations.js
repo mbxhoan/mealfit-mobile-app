@@ -149,7 +149,8 @@ export default handler(async (req, res) => {
     }
     return output;
   });
-  const conflict = results.find(result => result.conflict);
+  const conflict = results.find(result => result.conflict && result.errorCode !== "SESSION_ORDER_FORBIDDEN")
+    || results.find(result => result.conflict);
   if (conflict) {
     waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
     const sessionConflict = conflict.errorCode === "SESSION_ORDER_FORBIDDEN";

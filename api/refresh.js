@@ -111,8 +111,8 @@ export default handler(async (req, res) => {
       if (user.role === "shipper" && !shipperNames.length) throw new AppError(400, "SHIPPER_NAME_REQUIRED", "Tài khoản shipper chưa có tên để lọc đơn hàng.");
       const previousPull = meta[0]?.updated_at ? new Date(new Date(meta[0].updated_at).valueOf() - 120_000).toISOString() : "";
       stage = "n8n-fetch";
-      // The live webhook filters one shipper per request; read once and restrict before importing.
-      const pull = await fetchSheetOrdersForShippers({ shippers: user.role === "shipper" ? [""] : shipperNames, limit: 500, modifiedSince: user.role === "shipper" ? "" : previousPull });
+      // Fetch each current or legacy shipper name so the webhook filters rows before pagination.
+      const pull = await fetchSheetOrdersForShippers({ shippers: shipperNames, limit: 500, modifiedSince: user.role === "shipper" ? "" : previousPull });
       const allowedShippers = user.role === "shipper"
         ? new Set(shipperNames.map(name => name.trim().toLocaleLowerCase("vi-VN")))
         : null;
