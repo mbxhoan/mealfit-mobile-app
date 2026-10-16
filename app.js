@@ -982,10 +982,15 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   if (sheet) assertWebhookRetryAllowed();
   if (sheet && sheetSyncRunning) return;
   if (sheet) { sheetSyncRunning = true; render(); }
+  let pendingUpstream = 0;
+  let sheetRefreshFailed = false;
   try {
     if (sheet) await syncQueued();
     try { await refreshAccounts(); } catch { /* order sync can use the authenticated account already loaded */ }
-    if (sheet) await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 120_000 });
+    if (sheet) {
+      try { pendingUpstream = Number((await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 120_000 })).pendingUpstream) || 0; }
+      catch (error) { if (error.status === 401) throw error; sheetRefreshFailed = true; }
+    }
     let cursor = null;
     let first = true;
     let shipperSnapshot = false;
@@ -1016,7 +1021,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
     }
     lastSyncAt = Date.now();
     await setMeta(`lastSync:${user.id}`, lastSyncAt);
-    if (sheet) resetWebhookRetryCooldown();
+    if (sheet && !sheetRefreshFailed) resetWebhookRetryCooldown();
     render();
   } catch (error) {
     if (sheet) throw applyWebhookRetryCooldown(error);
@@ -1024,6 +1029,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   } finally {
     if (sheet) { sheetSyncRunning = false; render(); }
   }
+  return { pendingUpstream, sheetRefreshFailed };
 }
 
 async function pullChanges() {
@@ -1575,7 +1581,11 @@ app.addEventListener("click", async event => {
   if (action === "refresh") {
     if (syncRunning || sheetSyncRunning || orderSyncRunningId) return;
     if (!setButtonBusy(button, true)) return;
-    try { await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đã làm mới dữ liệu đơn hàng."); }
+    try {
+      const result = await pullRemoteOrders({ sheet: true, force: true });
+      void syncQueuedAppLog();
+      flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã làm mới từ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đã làm mới dữ liệu đơn hàng.");
+    }
     catch (error) { showError(error); }
     finally { setButtonBusy(button, false); }
     return;
@@ -1596,7 +1606,11 @@ app.addEventListener("click", async event => {
     modal = null; render();
     try {
       if (detailOrderId) { await syncOrderDetail(detailOrderId); flash(`Đã đồng bộ đơn ${detailOrderId}.`); }
-      else { await pullRemoteOrders({ sheet: true, force: true }); void syncQueuedAppLog(); flash("Đồng bộ đã hoàn tất."); }
+      else {
+        const result = await pullRemoteOrders({ sheet: true, force: true });
+        void syncQueuedAppLog();
+        flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã đồng bộ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đồng bộ đã hoàn tất.");
+      }
     } catch (error) { if (error.status === 401) void logout(); else showError(error); }
     finally { if (detailOrderId) { orderSyncRunningId = null; render(); } }
     return;

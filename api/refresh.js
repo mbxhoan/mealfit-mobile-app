@@ -1,4 +1,5 @@
 import { put } from "@vercel/blob";
+import { waitUntil } from "@vercel/functions";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { sheetShipperNames } from "../server-lib/accounts.mjs";
@@ -75,16 +76,17 @@ export default handler(async (req, res) => {
   let received = 0;
   let pages = 0;
   let usedCache = false;
+  let pendingCount = 0;
+  let conflictCount = 0;
   let stage = "outbox-drain";
   try {
     await acquireUserRefreshSlot(sql, user.id);
-    const sent = await flushUpstream();
-    const unverifiedPush = recent && !sent ? await sql`SELECT 1 FROM mealfit_upstream_outbox AS outbox
+    const unverifiedPush = recent ? await sql`SELECT 1 FROM mealfit_upstream_outbox AS outbox
       JOIN mealfit_operations AS operation ON operation.operation_id = outbox.operation_id AND operation.entity_type = 'order'
       WHERE outbox.status = 'sent' AND outbox.updated_at > ${previousPullAt}::timestamptz
         AND (${user.role !== "shipper"} OR operation.actor_id = ${user.id})
       LIMIT 1` : [];
-    usedCache = Boolean(recent && !sent && !unverifiedPush.length);
+    usedCache = Boolean(recent && !unverifiedPush.length);
     const pending = await sql`SELECT outbox.status, count(*)::int AS count, min(outbox.next_attempt_at) AS retry_at
       FROM mealfit_upstream_outbox AS outbox
       WHERE outbox.status IN ('queued', 'sending', 'failed', 'conflict')
@@ -96,20 +98,12 @@ export default handler(async (req, res) => {
           WHERE order_row.code = outbox.order_code AND order_row.assigned_user_id = ${user.id}
         ))
       GROUP BY outbox.status`;
-    const pendingCount = pending.reduce((sum, row) => sum + Number(row.count), 0);
-    if (pendingCount) {
-      const conflictCount = pending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
-      const error = new AppError(conflictCount ? 409 : 503, "UPSTREAM_SYNC_PENDING", `Còn ${pendingCount} cập nhật đơn chưa được Google Sheet xác nhận${conflictCount ? `, trong đó ${conflictCount} xung đột` : ""}.`);
-      if (!conflictCount) {
-        const retryAt = pending.filter(row => row.status === "failed" && row.retry_at).map(row => new Date(row.retry_at).getTime());
-        error.retryAfterSeconds = retryAt.length ? Math.max(10, Math.ceil((Math.min(...retryAt) - Date.now()) / 1000)) : 10;
-      }
-      req.apiLogDetail = { stage: "outbox-pending", pending: pendingCount, conflicts: conflictCount };
-      throw error;
-    }
+    pendingCount = pending.reduce((sum, row) => sum + Number(row.count), 0);
+    conflictCount = pending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
     if (usedCache) {
-      req.apiLogDetail = { stage: "cache", pending: 0 };
-      send(res, 200, { ok: true, refreshed: false, imported: 0, message: "Dữ liệu vừa được đồng bộ." });
+      req.apiLogDetail = { stage: "cache", pending: pendingCount, conflicts: conflictCount };
+      waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
+      send(res, 200, { ok: true, refreshed: false, imported: 0, pendingUpstream: pendingCount, conflicts: conflictCount, message: "Dữ liệu vừa được đồng bộ." });
       return;
     }
     try {
@@ -157,6 +151,7 @@ export default handler(async (req, res) => {
     wrapped.cause = error;
     throw wrapped;
   }
-  req.apiLogDetail = { stage: usedCache ? "cache" : "complete", received, imported: count, pages };
-  send(res, 200, { ok: true, refreshed: !usedCache, imported: count, message: usedCache ? "Dữ liệu vừa được đồng bộ." : "Đã cập nhật từ Google Sheet." });
+  req.apiLogDetail = { stage: usedCache ? "cache" : "complete", received, imported: count, pages, pendingUpstream: pendingCount, conflicts: conflictCount };
+  waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
+  send(res, 200, { ok: true, refreshed: !usedCache, imported: count, pendingUpstream: pendingCount, conflicts: conflictCount, message: usedCache ? "Dữ liệu vừa được đồng bộ." : "Đã cập nhật từ Google Sheet." });
 });
