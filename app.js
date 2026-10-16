@@ -78,7 +78,6 @@ let orderSyncRunningId = null;
 let syncErrorShown = false;
 let stateWriteRunning = false;
 let lastServerRtt = null;
-let serverCounts = {};
 let lastSyncAt = null;
 let conflictCount = 0;
 let activityKind = "api";
@@ -260,9 +259,9 @@ function loginScreen() {
 function orderCounts() {
   const visibleOrders = role === "shipper" && Array.isArray(state.visibleOrderIds) ? state.orders.filter(canSeeOrder) : state.orders;
   return {
-    pending: serverCounts["Chưa giao hàng"] ?? visibleOrders.filter(order => order.deliveryStatus === "Chưa giao hàng").length,
-    transit: serverCounts["Đang giao hàng"] ?? visibleOrders.filter(order => order.deliveryStatus === "Đang giao hàng").length,
-    delivered: serverCounts["Đã giao hàng"] ?? visibleOrders.filter(order => order.deliveryStatus === "Đã giao hàng").length
+    pending: visibleOrders.filter(order => order.deliveryStatus === "Chưa giao hàng").length,
+    transit: visibleOrders.filter(order => order.deliveryStatus === "Đang giao hàng").length,
+    delivered: visibleOrders.filter(order => order.deliveryStatus === "Đã giao hàng").length
   };
 }
 
@@ -995,7 +994,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
       const params = new URLSearchParams({ limit: "100" });
       if (cursor) params.set("cursor", cursor);
       const page = await apiRequest(`/api/orders?${params}`);
-      if (first) { serverCounts = page.counts || {}; shipperSnapshot = page.shipperSnapshot === true; first = false; }
+      if (first) { shipperSnapshot = page.shipperSnapshot === true; first = false; }
       if (shipperSnapshot) for (const order of page.data || []) if (order?.id) visibleOrderIds.add(order.id);
       state = normalizeState(await mergeRemote({ orders: page.data || [] }, user.id));
       lastPersistedState = cloneState(state);
@@ -1397,6 +1396,7 @@ async function deliverOrder(orderId) {
     const next = markDelivered(state, orderId);
     if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
     await updateState(next, "Đã ghi nhận giao hàng.");
+    if (navigator.onLine) await syncQueued();
   } catch (error) { flash(error.message); }
 }
 
@@ -1872,6 +1872,7 @@ app.addEventListener("click", async event => {
         : status === "Đã giao hàng" ? "Đã đánh dấu đơn đã giao."
           : "Đã hủy đơn.";
       await updateState(next, message);
+      if (status === "Đã giao hàng" && navigator.onLine) await syncQueued();
     } catch (error) { modal = null; render(); flash(error.message); }
     return;
   }
@@ -1886,6 +1887,7 @@ app.addEventListener("click", async event => {
       if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
       modal = null;
       await updateState(next, "Đã giao hàng, khoản phải thu vẫn được ghi nhận.");
+      if (navigator.onLine) await syncQueued();
     }
     catch (error) { modal = null; render(); flash(error.message); }
     return;
