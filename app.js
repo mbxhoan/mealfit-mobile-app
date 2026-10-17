@@ -1793,7 +1793,10 @@ app.addEventListener("click", async event => {
   }
   if (action === "start-session") {
     if (role !== "shipper") { flash("Chỉ shipper có thể bắt đầu phiên."); return; }
-    try { await updateState(startSession(state), "Bắt đầu giao hàng."); } catch (error) { flash(error.message); }
+    try {
+      await updateState(startSession(state), "Bắt đầu giao hàng.");
+      if (navigator.onLine) await syncQueued();
+    } catch (error) { flash(error.message); }
     return;
   }
   if (action === "pause-session") {
