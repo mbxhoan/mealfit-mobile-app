@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { withAdvisoryLock, withTransaction, getSql } from "./db.mjs";
+import { AppError } from "./core.mjs";
 import { toN8nBody } from "./orders.mjs";
 import { sheetId, fetchSheetOrder, pushSheetOrder } from "./n8n.mjs";
 import { importSheetOrders, sheetOrderMatchesPayload } from "./sync.mjs";
@@ -73,10 +74,21 @@ export async function queueUpstream(client, operationId, order, revision) {
   );
 }
 
-export async function flushUpstream(batchSize = 20) {
-  return withAdvisoryLock(772_024_101, async () => {
-    await getSql()`UPDATE mealfit_upstream_outbox SET status = 'failed', last_error = 'WORKER_INTERRUPTED', next_attempt_at = now(), updated_at = now()
-      WHERE status = 'sending' AND updated_at < now() - interval '2 minutes'`;
+export async function pendingUpstream(orderCodes) {
+  if (!orderCodes?.length) return [];
+  const codes = [...new Set(orderCodes.map(String).filter(Boolean))];
+  if (!codes.length) return [];
+  return getSql()`SELECT order_code, status, next_attempt_at FROM mealfit_upstream_outbox
+    WHERE order_code = ANY(${codes}::text[]) AND status IN ('queued', 'sending', 'failed', 'conflict')`;
+}
+
+export async function flushUpstream(batchSize = 20, orderCodes = null) {
+  const codes = orderCodes?.length ? [...new Set(orderCodes.map(String).filter(Boolean))] : null;
+  try {
+    return await withAdvisoryLock(772_024_101, async () => {
+      await getSql()`UPDATE mealfit_upstream_outbox SET status = 'failed', last_error = 'WORKER_INTERRUPTED', next_attempt_at = now(), updated_at = now()
+        WHERE status = 'sending' AND updated_at < now() - interval '2 minutes'
+          AND (${codes === null} OR order_code = ANY(${codes || []}::text[]))`;
     let sent = 0;
     for (let pass = 0; pass < 3; pass++) {
       const batch = await withTransaction(async client => {
@@ -84,6 +96,7 @@ export async function flushUpstream(batchSize = 20) {
           SELECT queued.operation_id, queued.order_code, queued.request_body, queued.attempts
           FROM mealfit_upstream_outbox queued
           WHERE queued.status IN ('queued', 'failed') AND queued.next_attempt_at <= now()
+            AND ($2::text[] IS NULL OR queued.order_code = ANY($2::text[]))
             AND NOT EXISTS (
               SELECT 1 FROM mealfit_upstream_outbox earlier
               WHERE earlier.order_code = queued.order_code AND earlier.target_revision < queued.target_revision
@@ -94,7 +107,7 @@ export async function flushUpstream(batchSize = 20) {
               WHERE sending.order_code = queued.order_code AND sending.status = 'sending'
             )
           ORDER BY queued.created_at LIMIT $1 FOR UPDATE SKIP LOCKED
-        `, [batchSize]);
+        `, [batchSize, codes]);
         for (const row of selected.rows) {
           await client.query("UPDATE mealfit_upstream_outbox SET status = 'sending', attempts = attempts + 1, updated_at = now() WHERE operation_id = $1", [row.operation_id]);
         }
@@ -121,5 +134,11 @@ export async function flushUpstream(batchSize = 20) {
       }
     }
     return sent;
-  });
+    }, 20_000);
+  } catch (error) {
+    if (error?.code !== "55P03") throw error;
+    const busy = new AppError(503, "OUTBOX_SYNC_BUSY", "Đồng bộ đang được xử lý ở thiết bị khác. Dữ liệu vẫn được giữ; vui lòng thử lại sau.");
+    busy.retryAfterSeconds = 5;
+    throw busy;
+  }
 }

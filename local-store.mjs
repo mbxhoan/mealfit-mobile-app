@@ -211,6 +211,17 @@ export async function ackOutbox(operationId, revision) {
   await complete(tx);
 }
 
+export async function rebaseOutbox(operationId, revision) {
+  const value = Number(revision);
+  if (!Number.isSafeInteger(value) || value < 0) return;
+  const db = await openLocalDb();
+  const tx = db.transaction("outbox", "readwrite");
+  const store = tx.objectStore("outbox");
+  const item = await requestValue(store.get(operationId));
+  if (item?.status === "inflight") { item.baseRevision = value; store.put(item); }
+  await complete(tx);
+}
+
 export async function failOutbox(operationId, conflict = false) {
   const db = await openLocalDb();
   const tx = db.transaction("outbox", "readwrite");

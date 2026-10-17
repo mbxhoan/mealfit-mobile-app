@@ -1,5 +1,4 @@
 import { put } from "@vercel/blob";
-import { waitUntil } from "@vercel/functions";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { sheetShipperNames } from "../server-lib/accounts.mjs";
@@ -100,9 +99,40 @@ export default handler(async (req, res) => {
       GROUP BY outbox.status`;
     pendingCount = pending.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
     conflictCount = pending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
+    if (pendingCount) {
+      const codes = await sql`SELECT DISTINCT outbox.order_code
+        FROM mealfit_upstream_outbox AS outbox
+        WHERE outbox.status IN ('queued', 'sending', 'failed')
+          AND (${user.role !== "shipper"} OR EXISTS (
+            SELECT 1 FROM mealfit_operations AS operation
+            WHERE operation.operation_id = outbox.operation_id AND operation.actor_id = ${user.id}
+          ) OR EXISTS (
+            SELECT 1 FROM mealfit_orders AS order_row
+            WHERE order_row.code = outbox.order_code AND order_row.assigned_user_id = ${user.id}
+          ))`;
+      if (codes.length) await flushUpstream(50, codes.map(row => row.order_code));
+      const remaining = await sql`SELECT outbox.status, count(*)::int AS count, min(outbox.next_attempt_at) AS retry_at
+        FROM mealfit_upstream_outbox AS outbox
+        WHERE outbox.status IN ('queued', 'sending', 'failed', 'conflict')
+          AND (${user.role !== "shipper"} OR EXISTS (
+            SELECT 1 FROM mealfit_operations AS operation
+            WHERE operation.operation_id = outbox.operation_id AND operation.actor_id = ${user.id}
+          ) OR EXISTS (
+            SELECT 1 FROM mealfit_orders AS order_row
+            WHERE order_row.code = outbox.order_code AND order_row.assigned_user_id = ${user.id}
+          ))
+        GROUP BY outbox.status`;
+      pendingCount = remaining.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
+      conflictCount = remaining.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
+      if (pendingCount) {
+        const retryAt = remaining.map(row => new Date(row.retry_at).getTime()).filter(Number.isFinite).sort((a, b) => a - b)[0];
+        const error = new AppError(503, "UPSTREAM_SYNC_PENDING", "Google Sheet chưa xác nhận các cập nhật đang chờ. Danh sách trên Neon chưa bị ghi đè; hãy thử lại sau.");
+        error.retryAfterSeconds = retryAt > Date.now() ? Math.max(5, Math.ceil((retryAt - Date.now()) / 1000)) : 5;
+        throw error;
+      }
+    }
     if (usedCache) {
       req.apiLogDetail = { stage: "cache", pending: pendingCount, conflicts: conflictCount };
-      waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
       send(res, 200, { ok: true, refreshed: false, imported: 0, pendingUpstream: pendingCount, conflicts: conflictCount, message: "Dữ liệu vừa được đồng bộ." });
       return;
     }
@@ -175,6 +205,5 @@ export default handler(async (req, res) => {
     throw wrapped;
   }
   req.apiLogDetail = { stage: usedCache ? "cache" : "complete", received, imported: count, pages, pendingUpstream: pendingCount, conflicts: conflictCount };
-  waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
   send(res, 200, { ok: true, refreshed: !usedCache, imported: count, pendingUpstream: pendingCount, conflicts: conflictCount, message: usedCache ? "Dữ liệu vừa được đồng bộ." : "Đã cập nhật từ Google Sheet." });
 });

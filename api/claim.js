@@ -44,10 +44,10 @@ export default handler(async (req, res) => {
           [user.id, code, operationId]
         );
       }
-      results.push(order);
+      results.push({ order, claimed: Boolean(update.rows[0]) });
     }
     return results;
   });
-  waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
-  send(res, 200, { data: claimed.map(order => ({ id: order.code, assignedUserId: user.id, shipperName: user.name, serverRevision: Number(order.revision) })) });
+  waitUntil(flushUpstream(50, codes).catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
+  send(res, 200, { data: claimed.map(({ order, claimed: newlyClaimed }) => ({ id: order.code, assignedUserId: user.id, shipperName: user.name, serverRevision: Number(order.revision), claimed: newlyClaimed })) });
 });

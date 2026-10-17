@@ -1,13 +1,26 @@
 import { createHash } from "node:crypto";
-import { waitUntil } from "@vercel/functions";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { withTransaction } from "../server-lib/db.mjs";
 import { sheetShipperNames } from "../server-lib/accounts.mjs";
 import { DELIVERY_STATUSES, PAYMENT_STATUSES, PAYMENT_METHODS, validateOrderMutation } from "../server-lib/orders.mjs";
-import { queueUpstream, flushUpstream } from "../server-lib/upstream.mjs";
+import { queueUpstream, flushUpstream, pendingUpstream } from "../server-lib/upstream.mjs";
 
 const hash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+async function confirmUpstream(orderCodes) {
+  await flushUpstream(50, orderCodes);
+  const pending = await pendingUpstream(orderCodes);
+  if (!pending.length) return;
+  const codes = [...new Set(pending.map(item => item.order_code))];
+  const conflict = pending.some(item => item.status === "conflict");
+  const retryAt = pending.map(item => new Date(item.next_attempt_at).getTime()).filter(Number.isFinite).sort((a, b) => a - b)[0];
+  const error = new AppError(503, "UPSTREAM_SYNC_PENDING", conflict
+    ? `Google Sheet có xung đột ở ${codes.slice(0, 5).join(", ")}. Dữ liệu trên API/Neon và thiết bị vẫn được giữ; cần xử lý xung đột trước khi xác nhận đồng bộ.`
+    : `Google Sheet chưa xác nhận ${codes.slice(0, 5).join(", ")}. Dữ liệu trên API/Neon và thiết bị vẫn được giữ, ứng dụng sẽ gửi lại.`);
+  error.retryAfterSeconds = retryAt > Date.now() ? Math.max(5, Math.ceil((retryAt - Date.now()) / 1000)) : 5;
+  throw error;
+}
 
 async function applyOrder(client, operation, user) {
   const id = String(operation?.operationId || "");
@@ -149,10 +162,13 @@ export default handler(async (req, res) => {
     }
     return output;
   });
+  const orderCodes = [...new Set(operations.flatMap(operation => operation.type === "order"
+    ? [operation.entityId || operation.payload?.id]
+    : operation.type === "session" ? operation.payload?.orderIds || [] : []).filter(Boolean).map(String))];
+  if (orderCodes.length) await confirmUpstream(orderCodes);
   const conflict = results.find(result => result.conflict && result.errorCode !== "SESSION_ORDER_FORBIDDEN")
     || results.find(result => result.conflict);
   if (conflict) {
-    waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
     const sessionConflict = conflict.errorCode === "SESSION_ORDER_FORBIDDEN";
     send(res, 409, {
       error: {
@@ -165,6 +181,5 @@ export default handler(async (req, res) => {
     });
     return;
   }
-  waitUntil(flushUpstream().catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
   send(res, 200, { results });
 });

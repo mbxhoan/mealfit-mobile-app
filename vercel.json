@@ -5,7 +5,9 @@
   "outputDirectory": "dist",
   "installCommand": "npm install",
   "functions": {
-    "api/refresh.js": { "maxDuration": 60 },
+    "api/refresh.js": { "maxDuration": 300 },
+    "api/operations.js": { "maxDuration": 300 },
+    "api/claim.js": { "maxDuration": 300 },
     "api/media.js": { "maxDuration": 60 }
   },
   "crons": [{ "path": "/api/refresh", "schedule": "0 3 * * *" }],

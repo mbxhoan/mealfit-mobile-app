@@ -35,7 +35,7 @@ import {
   ackAppLog, ackOutbox, commitState, deletePhoto as deleteLocalPhoto, enqueueAppLog, failAppLog, failOutbox, getMeta, getOutbox,
   getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
   nextAppLog,
-  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, setMeta, claimFirstInstallSync, writeStateSnapshot
+  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, rebaseOutbox, setMeta, claimFirstInstallSync, writeStateSnapshot
 } from "./local-store.mjs";
 import { inject } from '@vercel/analytics';
 
@@ -882,10 +882,19 @@ async function syncQueued() {
             .flatMap(item => item.payload.orderIds || [])
             .filter(code => !orderById(code)?.assignedUserId))];
           for (let offset = 0; offset < claimCodes.length; offset += 50) {
-            await apiRequest("/api/claim", { method: "POST", body: { codes: claimCodes.slice(offset, offset + 50) } });
+            const claim = await apiRequest("/api/claim", { method: "POST", body: { codes: claimCodes.slice(offset, offset + 50) }, timeout: 60_000 });
+            const revisions = new Map((claim.data || []).filter(order => order.claimed).map(order => [order.id, Number(order.serverRevision)]));
+            for (const item of batch) {
+              const revision = revisions.get(item.entityId);
+              if (item.type !== "order" || !Number.isSafeInteger(revision)) continue;
+              item.baseRevision = revision;
+              const operation = operations.find(value => value.operationId === item.id);
+              if (operation) operation.baseRevision = revision;
+              await rebaseOutbox(item.id, revision);
+            }
           }
         }
-        const result = await apiRequest("/api/operations", { method: "POST", body: { operations } });
+        const result = await apiRequest("/api/operations", { method: "POST", body: { operations }, timeout: 330_000 });
         const byId = new Map((result.results || []).map(item => [item.id, item]));
         for (const item of batch) {
           const acknowledgement = byId.get(item.id);
@@ -1012,10 +1021,12 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   try {
     try { await refreshAccounts(); } catch { /* order sync can use the authenticated account already loaded */ }
     if (sheet) {
-      try { pendingUpstream = Number((await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 120_000 })).pendingUpstream) || 0; }
-      catch (error) { if (error.status === 401) throw error; sheetRefreshFailed = true; }
       try { sessionConflicts = (await syncQueued()).sessionConflicts; }
       catch (error) { if (error.status === 401) throw error; syncError = error; }
+      if (!syncError) {
+        try { pendingUpstream = Number((await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 330_000 })).pendingUpstream) || 0; }
+        catch (error) { if (error.status === 401) throw error; sheetRefreshFailed = true; }
+      }
     }
     let cursor = null;
     let first = true;
@@ -1024,7 +1035,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
     do {
       const params = new URLSearchParams({ limit: "100" });
       if (cursor) params.set("cursor", cursor);
-      const page = await apiRequest(`/api/orders?${params}`);
+      const page = await apiRequest(`/api/orders?${params}`, { timeout: 60_000 });
       if (first) { shipperSnapshot = page.shipperSnapshot === true; first = false; }
       if (shipperSnapshot) for (const order of page.data || []) if (order?.id) visibleOrderIds.add(order.id);
       state = normalizeState(await mergeRemote({ orders: page.data || [] }, user.id));
@@ -1032,7 +1043,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
       cursor = page.nextCursor;
       render();
     } while (cursor);
-    const [sessions] = await Promise.all([apiRequest("/api/sessions")]);
+    const [sessions] = await Promise.all([apiRequest("/api/sessions", { timeout: 60_000 })]);
     const remoteSessions = sessions.data || [];
     const conflictedSessionIds = new Set([
       ...sessionConflicts,
@@ -1624,6 +1635,7 @@ app.addEventListener("click", async event => {
       void syncQueuedAppLog();
       if (result.syncError) showError(result.syncError);
       else if (result.sessionConflicts.length) flash("Đã làm mới danh sách đơn. Phiên cũ được giữ trong lịch sử trên thiết bị.");
+      else if (result.conflicts) flash(`Đã tải dữ liệu Neon/API · còn ${result.conflicts} xung đột Google Sheet cần Admin xử lý.`);
       else flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã làm mới từ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đã làm mới dữ liệu đơn hàng.");
     }
     catch (error) { showError(error); }
@@ -1651,6 +1663,7 @@ app.addEventListener("click", async event => {
         void syncQueuedAppLog();
         if (result.syncError) showError(result.syncError);
         else if (result.sessionConflicts.length) flash("Đã làm mới danh sách đơn. Phiên cũ được giữ trong lịch sử trên thiết bị.");
+        else if (result.conflicts) flash(`Đã tải dữ liệu Neon/API · còn ${result.conflicts} xung đột Google Sheet cần Admin xử lý.`);
         else flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã đồng bộ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đồng bộ đã hoàn tất.");
       }
     } catch (error) { if (error.status === 401) void logout(); else showError(error); }
