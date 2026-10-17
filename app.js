@@ -244,8 +244,8 @@ function appShell(content, { title = "", back = false } = {}) {
   const detailOrderId = currentView()?.name === "order" ? currentView().orderId : "";
   const syncing = syncRunning || sheetSyncRunning || Boolean(orderSyncRunningId);
   const tools = `${networkIndicator()}<button class="icon-button" data-action="${detailOrderId ? "refresh-order" : "refresh"}" data-id="${safe(detailOrderId)}" aria-label="${syncing ? "Đang đồng bộ đơn hàng" : detailOrderId ? `Đồng bộ đơn ${safe(detailOrderId)}` : "Đồng bộ đơn hàng"}" ${syncing ? "disabled" : ""}>${syncing ? '<span class="spinner" aria-hidden="true"></span>' : icon("refresh")}</button><button class="role-chip" data-action="logout" aria-label="Đổi tài khoản hoặc đăng xuất">${safe(user?.name || "")}</button>`;
-  const loading = syncRunning || sheetSyncRunning || Boolean(orderSyncRunningId) || photoSyncRunning;
-  const loadingLabel = sheetSyncRunning ? "Đang chờ lượt đồng bộ danh sách đơn…" : orderSyncRunningId ? `Đang tải đơn ${safe(orderSyncRunningId)}…` : photoSyncRunning ? "Đang gửi ảnh xác nhận…" : "Đang đồng bộ thay đổi…";
+  const loading = syncRunning || sheetSyncRunning || Boolean(orderSyncRunningId);
+  const loadingLabel = sheetSyncRunning ? "Đang chờ lượt đồng bộ danh sách đơn…" : orderSyncRunningId ? `Đang tải đơn ${safe(orderSyncRunningId)}…` : "Đang đồng bộ thay đổi…";
   const loadingBanner = loading && currentView()?.name !== "home" ? `<div class="request-loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>${loadingLabel}</span><i aria-hidden="true"></i></div>` : "";
   return `<div class="app-shell"><header class="topbar">${left}<img class="topbar-brand" src="/logo-transparent.png" alt="Mealfit"/><div class="topbar-tools">${tools}</div></header>${loadingBanner}${content}</div>${renderModal()}`;
 }
@@ -879,6 +879,7 @@ function scheduleQueuedSync(delay = 120) {
       if (result.webhookPending) flash(`Đã lưu thay đổi · webhook n8n đang cập nhật ${result.webhookPending} đơn.`);
     } catch (error) {
       if (error.status === 401) { void logout(); return; }
+      if (error.code === "SESSION_ORDERS_PENDING") { scheduleQueuedSync(error.retryAfterMs || 5_000); return; }
       if ([400, 403, 404, 409].includes(error.status)) {
         if (!syncErrorShown) { syncErrorShown = true; showError(error); }
         return;

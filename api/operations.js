@@ -99,7 +99,7 @@ async function applySession(client, operation, user) {
   const currentRevision = Number(current?.revision || 0);
   if (Number(operation.baseRevision || 0) !== currentRevision) return { conflict: true, id, sessionId, revision: currentRevision };
   if (payload.orderIds.length) {
-    const assigned = await client.query(`SELECT code, assigned_user_id, shipper_name FROM mealfit_orders WHERE code = ANY($1::text[])`, [payload.orderIds]);
+    const assigned = await client.query(`SELECT code, assigned_user_id, shipper_name, shipping_status FROM mealfit_orders WHERE code = ANY($1::text[])`, [payload.orderIds]);
     const ordersByCode = new Map(assigned.rows.map(order => [order.code, order]));
     const unassignedCodes = payload.orderIds.filter(code => !sheetOrderBelongsToShipper(ordersByCode.get(code), user));
     if (unassignedCodes.length) {
@@ -112,6 +112,22 @@ async function applySession(client, operation, user) {
     if (repaired.rows.length) await client.query(`INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, detail)
       SELECT $1, 'order', code, 'assignment-repair', '{"source":"session-sync"}'::jsonb
       FROM unnest($2::text[]) AS code`, [user.id, repaired.rows.map(row => row.code)]);
+    if (payload.status === "active") {
+      const pending = await client.query(`SELECT order_code, status, next_attempt_at FROM mealfit_upstream_outbox
+        WHERE order_code = ANY($1::text[]) AND status IN ('queued', 'sending', 'failed', 'conflict')`, [payload.orderIds]);
+      const conflicts = pending.rows.filter(row => row.status === "conflict").map(row => row.order_code);
+      if (conflicts.length) return { id, sessionId, conflict: true, errorCode: "SESSION_ORDER_SHEET_CONFLICT", orderCodes: [...new Set(conflicts)], revision: currentRevision };
+      if (pending.rows.length) {
+        waitUntil(flushUpstream(50, payload.orderIds).catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
+        const retryAt = Math.min(...pending.rows.filter(row => row.status === "failed").map(row => new Date(row.next_attempt_at).getTime()).filter(Number.isFinite));
+        const retryAfterSeconds = Number.isFinite(retryAt) ? Math.max(3, Math.min(30, Math.ceil((retryAt - Date.now()) / 1000))) : 5;
+        const error = new AppError(503, "SESSION_ORDERS_PENDING", "Đang chờ webhook xác nhận trạng thái của các đơn trong lộ trình.");
+        error.retryAfterSeconds = retryAfterSeconds;
+        throw error;
+      }
+      const notInTransit = payload.orderIds.filter(code => ordersByCode.get(code)?.shipping_status !== "Đang giao hàng");
+      if (notInTransit.length) return { id, sessionId, conflict: true, errorCode: "SESSION_ORDER_STATUS_MISMATCH", orderCodes: notInTransit, revision: currentRevision };
+    }
   }
   const nextRevision = currentRevision + 1;
   const ownerName = current?.owner_id === user.id ? user.name : current?.payload?.ownerName || user.name;
@@ -168,7 +184,11 @@ export default handler(async (req, res) => {
         code: conflict.errorCode || "REVISION_CONFLICT",
         message: sessionConflict
           ? `Các đơn ${conflict.unassignedCodes?.join(", ") || "trong phiên"} chưa được gán cho tài khoản này. Phiên được giữ trong lịch sử trên thiết bị.`
-          : "Đơn hoặc phiên đã được cập nhật ở nơi khác. Làm mới dữ liệu để xử lý xung đột."
+          : conflict.errorCode === "SESSION_ORDER_SHEET_CONFLICT"
+            ? `Google Sheet chưa xác nhận các đơn ${conflict.orderCodes?.join(", ") || "trong phiên"}. Làm mới dữ liệu để xử lý theo trạng thái trên Sheet.`
+            : conflict.errorCode === "SESSION_ORDER_STATUS_MISMATCH"
+              ? `Trạng thái trên máy chủ chưa là Đang giao hàng cho ${conflict.orderCodes?.join(", ") || "một số đơn"}. Làm mới dữ liệu rồi thử lại.`
+              : "Đơn hoặc phiên đã được cập nhật ở nơi khác. Làm mới dữ liệu để xử lý xung đột."
       },
       conflict, results
     });

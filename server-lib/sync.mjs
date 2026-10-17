@@ -1,5 +1,5 @@
 import { getSql } from "./db.mjs";
-import { normalizeSheetOrder } from "./orders.mjs";
+import { normalizeSheetOrder, sheetText } from "./orders.mjs";
 
 export function recordBatches(records, size = 100) {
   const batches = [];
@@ -50,7 +50,7 @@ export async function importSheetOrders(rows, { allowOutboxConflicts = false, al
   const sql = getSql();
   const accounts = await sql`SELECT id, name, aliases FROM mealfit_accounts WHERE role = 'shipper'`;
   const shipperIds = new Map(accounts.flatMap(account => [account.name, ...(account.aliases || [])]
-    .map(name => [String(name).trim().toLocaleLowerCase("vi-VN"), account.id])));
+    .map(name => [sheetText(name).toLocaleLowerCase("vi-VN"), account.id])));
   const records = orders.map(order => ({
     code: order.id,
     raw: order.raw,

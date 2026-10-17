@@ -5,6 +5,7 @@ import { sheetShipperNames } from "../server-lib/accounts.mjs";
 import { getSql } from "../server-lib/db.mjs";
 import { fetchSheetOrders, fetchSheetOrdersForShippers } from "../server-lib/n8n.mjs";
 import { importSheetOrders, markSheetPull, sheetUpdateMismatches } from "../server-lib/sync.mjs";
+import { sheetText } from "../server-lib/orders.mjs";
 import { flushUpstream, reconcileUpstreamWithSheet } from "../server-lib/upstream.mjs";
 
 const TABLES = ["mealfit_accounts", "mealfit_orders", "mealfit_sessions", "mealfit_operations", "mealfit_payment_events", "mealfit_upstream_outbox", "mealfit_media", "mealfit_conflicts", "mealfit_audit_log", "mealfit_auth_attempts", "mealfit_sync_meta"];
@@ -80,10 +81,10 @@ export default handler(async (req, res) => {
       const verificationCutoff = new Date().toISOString();
       const pull = await fetchSheetOrdersForShippers({ shippers: shipperNames, limit: 500 });
       const allowedShippers = user.role === "shipper"
-        ? new Set(shipperNames.map(name => name.trim().toLocaleLowerCase("vi-VN")))
+        ? new Set(shipperNames.map(name => sheetText(name).toLocaleLowerCase("vi-VN")))
         : null;
       const rows = allowedShippers
-        ? pull.rows.filter(row => allowedShippers.has(String(row?.Shipper || "").trim().toLocaleLowerCase("vi-VN")))
+        ? pull.rows.filter(row => allowedShippers.has(sheetText(row?.Shipper ?? row?.shipper).toLocaleLowerCase("vi-VN")))
         : pull.rows;
       received = rows.length;
       pages = pull.pages;

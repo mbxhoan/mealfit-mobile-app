@@ -8,6 +8,7 @@ const number = value => {
   const parsed = Number(String(value ?? "0").replace(/,/g, ""));
   return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : 0;
 };
+export const sheetText = value => String(value ?? "").normalize("NFC").trim();
 
 function dateValue(value) {
   if (!value) return null;
@@ -19,7 +20,7 @@ function dateValue(value) {
 }
 
 export function assignedUserId(value) {
-  const name = String(value ?? "").trim().toLocaleLowerCase("vi-VN");
+  const name = sheetText(value).toLocaleLowerCase("vi-VN");
   if (!name || name === "chưa phân công" || name === "unassigned") return null;
   if (name.includes("hiếu") || name.includes("hieu")) return "hieu";
   if (name.includes("hoàn") || name.includes("hoan")) return "hoan";
@@ -38,9 +39,11 @@ export function normalizeSheetOrder(row, extra = {}) {
   const subtotal = number(row["Sau giảm (đ)"] ?? row["Tổng CHƯA SHIP"]);
   const total = number(row["Tổng CÓ SHIP"] ?? subtotal + shippingFee);
   const paidAmount = number(row["Đã thanh toán"]);
-  const paymentStatus = PAYMENT_STATUSES.includes(row["Trạng thái đơn"]) ? row["Trạng thái đơn"] : "Chưa thanh toán";
-  const deliveryStatus = DELIVERY_STATUSES.includes(row["Trạng thái giao hàng"]) ? row["Trạng thái giao hàng"] : "Chưa giao hàng";
-  const shipperName = String(row.Shipper ?? "").trim();
+  const paymentValue = sheetText(row["Trạng thái đơn"] ?? row.payment_status);
+  const deliveryValue = sheetText(row["Trạng thái giao hàng"] ?? row.shipping_status);
+  const paymentStatus = PAYMENT_STATUSES.includes(paymentValue) ? paymentValue : "Chưa thanh toán";
+  const deliveryStatus = DELIVERY_STATUSES.includes(deliveryValue) ? deliveryValue : "Chưa giao hàng";
+  const shipperName = sheetText(row.Shipper ?? row.shipper);
   const dueFromSheet = row["TỔNG THANH TOÁN"] == null || row["TỔNG THANH TOÁN"] === "" ? Math.max(0, total - paidAmount) : number(row["TỔNG THANH TOÁN"]);
   return {
     id,
