@@ -58,22 +58,26 @@ export function handler(fn) {
     const scheduleLog = () => {
       if (logged || pathname === "/api/ping" || (pathname === "/api/diagnostics" && String(req.url).includes("view=logs"))) return;
       logged = true;
-      const cause = failure?.cause?.sourceError?.cause || failure?.cause?.sourceError || failure?.cause;
-      logContext.entries.push({
-        actorId: req.mealfitUser?.id || "system",
-        entityId: pathname.slice(0, 200),
-        operation: `${req.method || "GET"} ${responseStatus}`,
-        operationId: traceId,
-        detail: {
-          source: "app",
-          status: responseStatus,
-          durationMs: Date.now() - startedAt,
-          errorCode: failure?.code || (failure ? "INTERNAL" : null),
-          errorMessage: String(cause?.message || failure?.message || "").slice(0, 500) || null,
-          causeCode: cause?.code || null,
-          ...(req.apiLogDetail || {})
-        }
-      });
+      const method = String(req.method || "GET").toUpperCase();
+      const isAppLog = pathname === "/api/log" || (pathname === "/api/diagnostics" && /(?:[?&])view=log(?:&|$)/.test(String(req.url || "")));
+      if (responseStatus >= 400 || (!["GET", "HEAD"].includes(method) && !isAppLog)) {
+        const cause = failure?.cause?.sourceError?.cause || failure?.cause?.sourceError || failure?.cause;
+        logContext.entries.push({
+          actorId: req.mealfitUser?.id || "system",
+          entityId: pathname.slice(0, 200),
+          operation: `${method} ${responseStatus}`,
+          operationId: traceId,
+          detail: {
+            source: "app",
+            status: responseStatus,
+            durationMs: Date.now() - startedAt,
+            errorCode: failure?.code || (failure ? "INTERNAL" : null),
+            errorMessage: String(cause?.message || failure?.message || "").slice(0, 500) || null,
+            causeCode: cause?.code || null,
+            ...(req.apiLogDetail || {})
+          }
+        });
+      }
       persistApiCalls(logContext.entries);
     };
     res.writeHead = (status, ...args) => {

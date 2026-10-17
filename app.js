@@ -124,13 +124,9 @@ async function apiRequest(path, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
   const startedAt = performance.now();
   try {
-    const result = await sendApiRequest(path, options);
-    if (api !== "/api/log" && api !== "/api/ping") {
-      recordClientLog("info", `${method} ${api}`, method === "GET" ? "Đọc dữ liệu thành công" : "Yêu cầu ứng dụng thành công", { durationMs: Math.round(performance.now() - startedAt) });
-    }
-    return result;
+    return await sendApiRequest(path, options);
   } catch (error) {
-    if (api !== "/api/log") {
+    if (api !== "/api/log" && Number(error.status) === 0) {
       recordClientLog("error", `${method} ${api}`, "Yêu cầu ứng dụng thất bại", {
         status: Number(error.status) || 0,
         durationMs: Math.round(performance.now() - startedAt),
@@ -731,7 +727,6 @@ function persistLastView() {
 function navigate(view) {
   modal = null;
   viewStack.push(view);
-  recordClientLog("info", "app:navigate", `Mở màn hình ${view.name}`);
   render();
   persistLastView();
   window.scrollTo?.(0, 0);
@@ -741,7 +736,6 @@ function back() {
   if (modal) { modal = null; render(); return; }
   if (viewStack.length > 1) {
     viewStack.pop();
-    recordClientLog("info", "app:back", "Quay về màn hình trước");
   }
   render();
   persistLastView();
@@ -857,7 +851,6 @@ async function updateState(next, message) {
   }
   state = normalized;
   lastPersistedState = cloneState(state);
-  recordClientLog("info", "app:update", "Đã lưu thay đổi trên thiết bị");
   render();
   if (message) flash(`${message} · Đã lưu trên thiết bị`);
 }
@@ -1140,7 +1133,6 @@ async function refreshAccounts() {
 async function activateUser(nextUser, { restoreView = true, refresh = true } = {}) {
   user = nextUser;
   role = nextUser.role;
-  recordClientLog("info", "app:session", "Đã mở phiên ứng dụng");
   accounts[user.id] = { id: user.id, name: user.name, role: user.role };
   const shouldRunFirstSync = await claimFirstInstallSync();
   await setMeta("lastUser", user.id);

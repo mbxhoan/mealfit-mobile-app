@@ -253,7 +253,8 @@ export async function nextAppLog(ownerId, now = Date.now()) {
   for (const item of all) if (shouldRetryInflight(item, now)) { item.status = "queued"; store.put(item); }
   if (all.some(item => item.status === "inflight")) { await complete(tx); return null; }
   const values = all.filter(item => item.ownerId === ownerId).sort((a, b) => a.createdAt - b.createdAt);
-  const item = values.find(value => value.status === "queued" && Number(value.nextAttemptAt || 0) <= now);
+  for (const value of values) if (value.type === "info") store.delete(value.id);
+  const item = values.find(value => value.type === "error" && value.status === "queued" && Number(value.nextAttemptAt || 0) <= now);
   if (item) { item.status = "inflight"; item.updatedAt = now; store.put(item); }
   await complete(tx);
   return item ? clone(item) : null;
