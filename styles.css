@@ -184,10 +184,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .detail-row span:last-child { text-align: right; overflow-wrap: anywhere; }
 .detail-row.total { margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 15px; font-weight: 750; }
 .detail-row.total span:first-child { color: var(--ink); }
-.order-detail .detail-row.collect-due { margin: 4px 0; padding: 10px; border-radius: 12px; font-size: 14px; font-weight: 750; }
+.order-detail .payment-section .detail-row:not(.collect-due) > span:last-child { font-size: 11px; }
+.order-detail .payment-section .detail-row.total > span:last-child { font-size: 12px; }
+.order-detail .detail-row.collect-due { margin: 7px 0; padding: 12px; border-radius: 12px; font-size: 16px; font-weight: 750; }
 .order-detail .detail-row.collect-due.has-due { background: #fff5e7; color: #9b6717; }
 .order-detail .detail-row.collect-due.settled { background: var(--green-soft); color: var(--green); }
-.order-detail .detail-row.collect-due strong:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.order-detail .detail-row.collect-due strong:last-child { font-size: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .product-line { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; padding: 10px 0; border-top: 1px solid #f0f0f1; font-size: 13px; }
 .order-detail .product-line { gap: 2px 10px; padding: 6px 0; font-size: 12px; }
 .product-line:first-of-type { border-top: 0; }
