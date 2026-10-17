@@ -874,8 +874,9 @@ function scheduleQueuedSync(delay = 120) {
     if (!user || !navigator.onLine) return;
     if (syncRunning || sheetSyncRunning) { scheduleQueuedSync(350); return; }
     try {
-      await syncQueued();
+      const result = await syncQueued();
       syncRetryDelay = 1_500;
+      if (result.webhookPending) flash(`Đã lưu thay đổi · webhook n8n đang cập nhật ${result.webhookPending} đơn.`);
     } catch (error) {
       if (error.status === 401) { void logout(); return; }
       if ([400, 403, 404, 409].includes(error.status)) {
@@ -897,6 +898,7 @@ async function syncQueued() {
   render();
   let hasOperations = false;
   let syncFailure = null;
+  let webhookPending = 0;
   const sessionConflicts = new Set();
   try {
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -923,6 +925,7 @@ async function syncQueued() {
           }
         }
         const result = await apiRequest("/api/operations", { method: "POST", body: { operations }, timeout: 120_000 });
+        webhookPending += Number(result.upstreamPending) || 0;
         const byId = new Map((result.results || []).map(item => [item.id, item]));
         for (const item of batch) {
           const acknowledgement = byId.get(item.id);
@@ -970,7 +973,7 @@ async function syncQueued() {
   const pending = (await getOutbox(user.id)).filter(item => !["done", "conflict"].includes(item.status));
   if (syncFailure) throw syncFailure;
   if (pending.length) throw new Error(`Còn ${pending.length} thay đổi chưa gửi được. Thử đồng bộ lại trước khi tải danh sách đơn.`);
-  return { sessionConflicts: [...sessionConflicts] };
+  return { sessionConflicts: [...sessionConflicts], webhookPending };
 }
 
 async function syncQueuedAppLog() {

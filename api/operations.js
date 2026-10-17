@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { waitUntil } from "@vercel/functions";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { withTransaction } from "../server-lib/db.mjs";
@@ -147,7 +148,6 @@ export default handler(async (req, res) => {
     .map(operation => operation.entityId || operation.payload?.id)
     .filter(Boolean).map(String))];
   if (orderCodes.length) {
-    await flushUpstream(50, orderCodes);
     const pending = await pendingUpstream(orderCodes);
     const conflicts = new Set(pending.filter(item => item.status === "conflict").map(item => item.order_code));
     if (conflicts.size) {
@@ -157,7 +157,7 @@ export default handler(async (req, res) => {
       });
       return;
     }
-    if (pending.length) throw new AppError(503, "SHEET_UPDATE_PENDING", "Webhook n8n chưa xác nhận cập nhật. Thao tác vẫn được giữ để thử lại.");
+    waitUntil(flushUpstream(50, orderCodes).catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
   }
   const conflict = results.find(result => result.conflict && result.errorCode !== "SESSION_ORDER_FORBIDDEN")
     || results.find(result => result.conflict);
@@ -174,5 +174,5 @@ export default handler(async (req, res) => {
     });
     return;
   }
-  send(res, 200, { results });
+  send(res, 200, { results, upstreamPending: orderCodes.length ? (await pendingUpstream(orderCodes)).length : 0 });
 });
