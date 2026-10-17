@@ -392,7 +392,7 @@ function paymentSummary(order) {
   const due = dueAmount(order);
   return `<div class="detail-row"><span>Trạng thái</span><span>${statusBadge(order.paymentStatus || (due ? "Chưa thanh toán" : "Đã thanh toán"), "payment")}</span></div>
     <div class="detail-row"><span>Đã thanh toán</span><span>${money(order.paidAmount)}</span></div>
-    <div class="detail-row"><span>Còn phải thu</span><span class="${due ? "" : "profit"}">${money(due)}</span></div>${order.paymentMethod ? `<div class="detail-row"><span>Phương thức gần nhất</span><span>${safe(order.paymentMethod)}</span></div>` : ""}`;
+    <div class="detail-row collect-due ${due ? "has-due" : "settled"}"><strong>Còn phải thu</strong><strong>${money(due)}</strong></div>${order.paymentMethod ? `<div class="detail-row"><span>Phương thức gần nhất</span><span>${safe(order.paymentMethod)}</span></div>` : ""}`;
 }
 
 function photoSection(order, locked = false) {
