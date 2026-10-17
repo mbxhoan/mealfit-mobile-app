@@ -169,7 +169,11 @@ export async function fetchSheetOrders({ cursor = "", limit = 100, modifiedSince
   if (cursor) params.set("cursor", cursor);
   if (modifiedSince) params.set("since", modifiedSince);
   if (shipper.trim()) params.set("shipper", shipper.trim());
-  const response = await n8nRequest(`shipping-orders?${params}`);
+  let response = await n8nRequest(`shipping-orders?${params}`);
+  if (typeof response === "string") {
+    try { response = JSON.parse(response); }
+    catch { throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Webhook danh sách đơn không trả về JSON hợp lệ."); }
+  }
   if (Array.isArray(response)) return { rows: response, nextCursor: null };
   if (Array.isArray(response?.data)) return { rows: response.data, nextCursor: response.nextCursor || null };
   throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Webhook danh sách đơn không trả về mảng data.");

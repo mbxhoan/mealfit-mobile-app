@@ -182,6 +182,30 @@ test("shipping-orders accepts n8n's total/data response and preserves all return
   assert.equal(result.nextCursor, null);
 });
 
+test("shipping-orders decodes a JSON-string body and preserves delivered statuses", async t => {
+  const originalFetch = globalThis.fetch;
+  const originalBase = process.env.N8N_BASE_URL;
+  const originalKey = process.env.N8N_API_KEY;
+  const originalSheet = process.env.N8N_SHEET_ID;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    for (const [key, value] of [["N8N_BASE_URL", originalBase], ["N8N_API_KEY", originalKey], ["N8N_SHEET_ID", originalSheet]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  process.env.N8N_BASE_URL = "https://example.test/webhook";
+  process.env.N8N_API_KEY = "test-only-secret";
+  process.env.N8N_SHEET_ID = "test-sheet";
+  const rows = [
+    { "Mã đơn": "DH0898", Shipper: "Hiếu", "Trạng thái giao hàng": "Đã giao hàng" },
+    { "Mã đơn": "DH0923", Shipper: "Hiếu", "Trạng thái giao hàng": "Đã giao hàng" }
+  ];
+  globalThis.fetch = async () => Response.json(JSON.stringify({ total: rows.length, data: rows }));
+
+  const result = await fetchSheetOrders({ shipper: "Hiếu" });
+  assert.deepEqual(result.rows.map(row => row["Trạng thái giao hàng"]), ["Đã giao hàng", "Đã giao hàng"]);
+});
+
 test("shipping-orders rejects a successful response without an order list", async t => {
   const originalFetch = globalThis.fetch;
   const originalBase = process.env.N8N_BASE_URL;
