@@ -35,7 +35,7 @@ import {
   ackAppLog, ackOutbox, commitState, deletePhoto as deleteLocalPhoto, enqueueAppLog, failAppLog, failOutbox, getMeta, getOutbox,
   getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
   nextAppLog,
-  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, rebaseOutbox, setMeta, claimFirstInstallSync, writeStateSnapshot
+  nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, rebaseOutbox, setMeta, writeStateSnapshot
 } from "./local-store.mjs";
 import { inject } from '@vercel/analytics';
 
@@ -686,7 +686,7 @@ function renderModal() {
     return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Chưa hoàn tất</h2><p>${safe(modal.message)}</p><div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="retry-sync" ${retrySeconds ? "disabled" : ""}>${retrySeconds ? `Chờ ${retrySeconds} giây` : "Thử lại"}</button></div></section></div>`;
   }
   if (modal.type === "camera") return `<div class="modal-backdrop"><section class="modal camera-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Chụp ảnh đơn hàng</h2><video id="camera-video" autoplay playsinline></video><canvas id="camera-canvas" class="hidden-input"></canvas><p class="fine-print" data-camera-message>Đang mở camera…</p><div class="modal-actions"><button class="button secondary" data-action="close-camera">Đóng</button><button class="button" data-action="capture-photo" disabled>Chụp ảnh</button></div></section></div>`;
-  if (modal.type === "conflicts") return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Xung đột đồng bộ</h2><p>${safe(modal.message || "Chọn dữ liệu cần giữ cho từng đơn.")}</p>${(modal.items || []).map(item => `<div class="conflict-row"><strong>${safe(item.orderCode)}</strong><div class="modal-actions"><button class="button secondary" data-action="resolve-conflict" data-id="${safe(item.conflictId)}" data-choice="sheet">Giữ Sheet</button><button class="button" data-action="resolve-conflict" data-id="${safe(item.conflictId)}" data-choice="app">Giữ ứng dụng</button></div></div>`).join("") || '<p>Không còn xung đột cần xử lý.</p>'}<div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="retry-sync">Làm mới</button></div></section></div>`;
+  if (modal.type === "conflicts") return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Xung đột đồng bộ</h2><p>${safe(modal.message || "Dữ liệu từ Google Sheet là nguồn chuẩn.")}</p>${(modal.items || []).map(item => `<div class="conflict-row"><strong>${safe(item.orderCode)}</strong><div class="modal-actions"><button class="button" data-action="resolve-conflict" data-id="${safe(item.conflictId)}" data-choice="sheet">Tải lại từ Sheet</button></div></div>`).join("") || '<p>Không còn xung đột cần xử lý.</p>'}<div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="retry-sync">Làm mới</button></div></section></div>`;
   return "";
 }
 
@@ -922,7 +922,7 @@ async function syncQueued() {
             }
           }
         }
-        const result = await apiRequest("/api/operations", { method: "POST", body: { operations }, timeout: 20_000 });
+        const result = await apiRequest("/api/operations", { method: "POST", body: { operations }, timeout: 120_000 });
         const byId = new Map((result.results || []).map(item => [item.id, item]));
         for (const item of batch) {
           const acknowledgement = byId.get(item.id);
@@ -1036,37 +1036,28 @@ async function syncPendingMediaDeletes() {
   await setMeta(key, remaining);
 }
 
-async function pullRemoteOrders({ sheet = false, force = false } = {}) {
+async function pullRemoteOrders({ sheet = false } = {}) {
   if (!user) return;
   if (!navigator.onLine) throw new Error("Cần kết nối mạng để đồng bộ danh sách đơn hàng.");
   if (sheet) assertWebhookRetryAllowed();
   if (sheet && sheetSyncRunning) return;
   if (sheet) { sheetSyncRunning = true; render(); }
   let pendingUpstream = 0;
-  let sheetRefreshFailed = false;
   let syncError = null;
   let sessionConflicts = [];
-  let refreshAuthError = null;
-  let refreshRequest = null;
   try {
     if (sheet) {
       const accountsRequest = refreshAccounts().catch(() => {});
       try { sessionConflicts = (await syncQueued()).sessionConflicts; }
       catch (error) { if (error.status === 401) throw error; syncError = error; }
       await accountsRequest;
-      if (!syncError) {
-        const cursorKey = `changeCursor:${user.id}`;
-        if (await getMeta(cursorKey) == null) {
-          const baseline = await apiRequest("/api/changes?baseline=1");
-          await setMeta(cursorKey, baseline.cursor || "0");
-        }
-        refreshRequest = apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 330_000 })
-          .then(result => { pendingUpstream = Number(result.pendingUpstream) || 0; })
-          .catch(error => {
-            if (error.status === 401) refreshAuthError = error;
-            sheetRefreshFailed = true;
-          });
+      const cursorKey = `changeCursor:${user.id}`;
+      if (await getMeta(cursorKey) == null) {
+        const baseline = await apiRequest("/api/changes?baseline=1");
+        await setMeta(cursorKey, baseline.cursor || "0");
       }
+      const refreshed = await apiRequest("/api/refresh", { method: "POST", body: {}, timeout: 330_000 });
+      pendingUpstream = Number(refreshed.pendingUpstream) || 0;
     }
     let cursor = null;
     let first = true;
@@ -1081,7 +1072,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
     do {
       if (first) { shipperSnapshot = page.shipperSnapshot === true; first = false; }
       if (shipperSnapshot) for (const order of page.data || []) if (order?.id) visibleOrderIds.add(order.id);
-      state = normalizeState(await mergeRemote({ orders: page.data || [] }, user.id));
+      state = normalizeState(await mergeRemote({ orders: page.data || [], sheetAuthoritative: sheet }, user.id));
       lastPersistedState = cloneState(state);
       cursor = page.nextCursor;
       render();
@@ -1110,11 +1101,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
       state.visibleOrderIds = [...visibleOrderIds];
       await writeStateSnapshot(state, user.id);
     }
-    if (refreshRequest) {
-      await refreshRequest;
-      await pullChanges({ silent: true, allowDuringRefresh: true });
-      if (refreshAuthError) throw refreshAuthError;
-    }
+    if (sheet) await pullChanges({ silent: true, allowDuringRefresh: true });
     lastPersistedState = cloneState(state);
     if (role === "admin") {
       try { conflictCount = (await apiRequest("/api/conflicts")).data.length; }
@@ -1122,7 +1109,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
     }
     lastSyncAt = Date.now();
     await setMeta(`lastSync:${user.id}`, lastSyncAt);
-    if (sheet && !sheetRefreshFailed) resetWebhookRetryCooldown();
+    if (sheet) resetWebhookRetryCooldown();
     render();
   } catch (error) {
     if (sheet) throw applyWebhookRetryCooldown(error);
@@ -1130,7 +1117,7 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   } finally {
     if (sheet) { sheetSyncRunning = false; render(); }
   }
-  return { pendingUpstream, sheetRefreshFailed, syncError, sessionConflicts };
+  return { pendingUpstream, syncError, sessionConflicts };
 }
 
 async function pullChanges({ silent = false, allowDuringRefresh = false } = {}) {
@@ -1227,7 +1214,6 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
   user = nextUser;
   role = nextUser.role;
   accounts[user.id] = { id: user.id, name: user.name, role: user.role };
-  const shouldRunFirstSync = await claimFirstInstallSync();
   await setMeta("lastUser", user.id);
   state = normalizeState(await readState(emptyState(), user.id));
   lastPersistedState = cloneState(state);
@@ -1239,17 +1225,8 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
   render();
   startNetworkMonitor();
   if (refresh && navigator.onLine) {
-    try {
-      if (shouldRunFirstSync) {
-        const cursorKey = `changeCursor:${user.id}`;
-        const previousCursor = await getMeta(cursorKey);
-        const baseline = previousCursor == null ? await apiRequest("/api/changes?baseline=1") : null;
-        await pullRemoteOrders({ sheet: true });
-        if (baseline) await setMeta(cursorKey, baseline.cursor || "0");
-      } else {
-        await pullChanges();
-      }
-    } catch (error) { showError(error); }
+    try { await pullRemoteOrders({ sheet: true }); }
+    catch (error) { showError(error); }
   }
   if (navigator.onLine) scheduleQueuedSync(0);
 }
@@ -1726,12 +1703,12 @@ app.addEventListener("click", async event => {
     if (syncRunning || sheetSyncRunning || orderSyncRunningId) return;
     if (!setButtonBusy(button, true)) return;
     try {
-      const result = await pullRemoteOrders({ sheet: true, force: true });
+      const result = await pullRemoteOrders({ sheet: true });
       void syncQueuedAppLog();
       if (result.syncError) showError(result.syncError);
       else if (result.sessionConflicts.length) flash("Đã làm mới danh sách đơn. Phiên cũ được giữ trong lịch sử trên thiết bị.");
-      else if (result.conflicts) flash(`Đã tải dữ liệu Neon/API · còn ${result.conflicts} xung đột Google Sheet cần Admin xử lý.`);
-      else flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã làm mới từ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đã làm mới dữ liệu đơn hàng.");
+      else if (result.conflicts) flash(`Đã tải dữ liệu từ Sheet · còn ${result.conflicts} xung đột cần Admin xử lý.`);
+      else flash(result.pendingUpstream ? `Đã làm mới từ Sheet · còn ${result.pendingUpstream} cập nhật chưa được webhook xác nhận.` : "Đã làm mới dữ liệu từ Sheet qua webhook n8n.");
     }
     catch (error) { showError(error); }
     finally { setButtonBusy(button, false); }
@@ -1754,12 +1731,12 @@ app.addEventListener("click", async event => {
     try {
       if (detailOrderId) { await syncOrderDetail(detailOrderId); flash(`Đã đồng bộ đơn ${detailOrderId}.`); }
       else {
-        const result = await pullRemoteOrders({ sheet: true, force: true });
+        const result = await pullRemoteOrders({ sheet: true });
         void syncQueuedAppLog();
         if (result.syncError) showError(result.syncError);
         else if (result.sessionConflicts.length) flash("Đã làm mới danh sách đơn. Phiên cũ được giữ trong lịch sử trên thiết bị.");
-        else if (result.conflicts) flash(`Đã tải dữ liệu Neon/API · còn ${result.conflicts} xung đột Google Sheet cần Admin xử lý.`);
-        else flash(result.sheetRefreshFailed ? "Đã tải dữ liệu Neon/API; chưa đồng bộ được Google Sheet." : result.pendingUpstream ? `Đã đồng bộ Neon/API · còn ${result.pendingUpstream} cập nhật chờ Google Sheet.` : "Đồng bộ đã hoàn tất.");
+        else if (result.conflicts) flash(`Đã tải dữ liệu từ Sheet · còn ${result.conflicts} xung đột cần Admin xử lý.`);
+        else flash(result.pendingUpstream ? `Đã làm mới từ Sheet · còn ${result.pendingUpstream} cập nhật chưa được webhook xác nhận.` : "Đồng bộ từ Sheet qua webhook n8n đã hoàn tất.");
       }
     } catch (error) { if (error.status === 401) void logout(); else showError(error); }
     finally { if (detailOrderId) { orderSyncRunningId = null; render(); } }

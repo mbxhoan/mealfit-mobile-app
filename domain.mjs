@@ -25,9 +25,16 @@ export function allowedPhotoCount(existingCount, requestedCount) {
   return Math.max(0, Math.min(Math.floor(requestedCount), MAX_PHOTOS_PER_ORDER - Math.floor(existingCount)));
 }
 
-export const dueAmount = order => order.paymentStatus === "Đã thanh toán"
-  ? 0
-  : Math.max(0, Number.isFinite(Number(order.remainingDue)) ? Number(order.remainingDue) : order.total - order.paidAmount);
+export const dueAmount = order => {
+  if (order.paymentStatus === "Đã thanh toán") return 0;
+  const total = Math.max(0, Number(order.total) || 0);
+  const paidAmount = Math.max(0, Number(order.paidAmount) || 0);
+  const remainingDue = Number(order.remainingDue);
+  if (order.paymentStatus === "Chưa thanh toán" && !(remainingDue > 0)) {
+    return Math.max(0, total - paidAmount) || total;
+  }
+  return Math.max(0, Number.isFinite(remainingDue) ? remainingDue : total - paidAmount);
+};
 
 export const isAssignedPendingOrder = (order, userId) => Boolean(
   userId && order?.assignedUserId === userId && order.deliveryStatus === "Chưa giao hàng"
@@ -85,6 +92,11 @@ function sortPendingByShift(orderIds, shifts, legs) {
 }
 
 export function normalizeState(state) {
+  const orders = state.orders.map(order => {
+    if (order.paymentStatus !== "Chưa thanh toán" || Number(order.remainingDue) > 0) return order;
+    const remainingDue = dueAmount(order);
+    return { ...order, paidAmount: Math.max(0, Number(order.total) || 0) - remainingDue, remainingDue };
+  });
   const sessions = state.sessions.map(session => {
     const status = ["notStarted", "active", "paused", "completed", "cancelled"].includes(session.status)
       ? session.status
@@ -106,7 +118,7 @@ export function normalizeState(state) {
   });
   const active = sessions.find(session => session.id === state.activeSessionId && !session.syncConflict && OPEN_SESSION_STATUSES.includes(session.status))
     || sessions.find(session => !session.syncConflict && OPEN_SESSION_STATUSES.includes(session.status));
-  return { ...state, sessions, activeSessionId: active?.id ?? null };
+  return { ...state, orders, sessions, activeSessionId: active?.id ?? null };
 }
 
 const updateOrder = (state, orderId, update) => ({
@@ -287,9 +299,9 @@ export function deleteSession(state, sessionId) {
     sessions: state.sessions.filter(item => item.id !== sessionId),
     orders: state.orders.map(order => {
       if (order.sessionId !== sessionId && !orderIds.has(order.id)) return order;
-      return order.deliveryStatus === "Đang giao hàng"
-        ? { ...order, deliveryStatus: "Chưa giao hàng", deliveryMethod: null, sessionId: null, deliveredAt: null }
-        : { ...order, sessionId: null };
+      return ["Đã giao hàng", "Đã huỷ đơn"].includes(order.deliveryStatus)
+        ? { ...order, sessionId: null }
+        : { ...order, deliveryStatus: "Chưa giao hàng", deliveryMethod: null, sessionId: null, deliveredAt: null };
     })
   };
 }

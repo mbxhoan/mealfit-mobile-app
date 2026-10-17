@@ -44,7 +44,7 @@ export function sheetUpdateMismatches(updates, rows) {
   }).map(([code]) => code);
 }
 
-export async function importSheetOrders(rows, { allowOutboxConflicts = false, allowOpenConflicts = false } = {}) {
+export async function importSheetOrders(rows, { allowOutboxConflicts = false, allowOpenConflicts = false, sheetAuthoritative = false } = {}) {
   const orders = rows.map(row => normalizeSheetOrder(row)).filter(Boolean);
   if (!orders.length) return 0;
   const sql = getSql();
@@ -136,7 +136,7 @@ export async function importSheetOrders(rows, { allowOutboxConflicts = false, al
       revision = mealfit_orders.revision + 1,
       synced_at = now(),
       updated_at = now()
-    -- Forced Sheet refreshes can import while keeping mismatched outbox payloads in conflict state.
+    -- Live Sheet rows bypass local queues, while revisions prevent an older page rolling back a newer row.
     WHERE (EXCLUDED.source_revision > mealfit_orders.source_revision
       OR ((EXCLUDED.source_revision = mealfit_orders.source_revision
         OR NOT (EXCLUDED.row_data ? 'revision' OR EXCLUDED.row_data ? 'Revision')) AND (
@@ -159,8 +159,9 @@ export async function importSheetOrders(rows, { allowOutboxConflicts = false, al
       )))
       AND NOT EXISTS (SELECT 1 FROM mealfit_upstream_outbox queued
         WHERE queued.order_code = mealfit_orders.code
+          AND NOT ${sheetAuthoritative}
           AND (queued.status IN ('queued', 'sending', 'failed') OR (${!allowOutboxConflicts} AND queued.status = 'conflict')))
-      AND (${allowOpenConflicts} OR NOT EXISTS (SELECT 1 FROM mealfit_conflicts conflict
+      AND (${sheetAuthoritative} OR ${allowOpenConflicts} OR NOT EXISTS (SELECT 1 FROM mealfit_conflicts conflict
         WHERE conflict.order_code = mealfit_orders.code AND conflict.status = 'open'))
     RETURNING code
   `;

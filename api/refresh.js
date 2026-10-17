@@ -1,5 +1,4 @@
 import { put } from "@vercel/blob";
-import { waitUntil } from "@vercel/functions";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { sheetShipperNames } from "../server-lib/accounts.mjs";
@@ -9,36 +8,6 @@ import { importSheetOrders, markSheetPull, sheetUpdateMismatches } from "../serv
 import { flushUpstream, reconcileUpstreamWithSheet } from "../server-lib/upstream.mjs";
 
 const TABLES = ["mealfit_accounts", "mealfit_orders", "mealfit_sessions", "mealfit_operations", "mealfit_payment_events", "mealfit_upstream_outbox", "mealfit_media", "mealfit_conflicts", "mealfit_audit_log", "mealfit_auth_attempts", "mealfit_sync_meta"];
-const REFRESH_COOLDOWN_MS = 10_000;
-
-async function scheduleUserOutboxFlush(sql, user) {
-  const codes = await sql`SELECT DISTINCT outbox.order_code
-    FROM mealfit_upstream_outbox AS outbox
-    WHERE outbox.status IN ('queued', 'failed')
-      AND (${user.role !== "shipper"} OR EXISTS (
-        SELECT 1 FROM mealfit_operations AS operation
-        WHERE operation.operation_id = outbox.operation_id AND operation.actor_id = ${user.id}
-      ) OR EXISTS (
-        SELECT 1 FROM mealfit_orders AS order_row
-        WHERE order_row.code = outbox.order_code AND order_row.assigned_user_id = ${user.id}
-      ))`;
-  if (codes.length) waitUntil(flushUpstream(50, codes.map(row => row.order_code)).catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
-}
-
-async function acquireUserRefreshSlot(sql, userId) {
-  const key = `sheet-refresh:${userId}`;
-  const allowed = await sql`INSERT INTO mealfit_sync_meta (key, value, updated_at)
-    VALUES (${key}, '{}'::jsonb, clock_timestamp())
-    ON CONFLICT (key) DO UPDATE SET updated_at = EXCLUDED.updated_at
-    WHERE mealfit_sync_meta.updated_at <= EXCLUDED.updated_at - interval '10 seconds'
-    RETURNING key`;
-  if (allowed.length) return;
-  const rows = await sql`SELECT updated_at FROM mealfit_sync_meta WHERE key = ${key} LIMIT 1`;
-  const retryAfter = Math.max(1, Math.ceil((new Date(rows[0].updated_at).getTime() + REFRESH_COOLDOWN_MS - Date.now()) / 1000));
-  const error = new AppError(429, "SYNC_COOLDOWN", `Đồng bộ vừa được thử. Vui lòng chờ ${retryAfter} giây rồi thử lại.`);
-  error.retryAfterSeconds = retryAfter;
-  throw error;
-}
 
 async function runMaintenance(req, res) {
   requireMethod(req, "GET", "POST");
@@ -78,29 +47,18 @@ export default handler(async (req, res) => {
   requireMethod(req, "POST");
   assertSameOrigin(req);
   const user = await requireUser(req);
-  const body = await readJson(req);
+  await readJson(req);
   const sql = getSql();
   const syncKey = user.role === "shipper" ? `last-sheet-pull:${user.id}` : "last-sheet-pull";
   const meta = await sql`SELECT updated_at FROM mealfit_sync_meta WHERE key = ${syncKey} LIMIT 1`;
   const previousPullAt = meta[0]?.updated_at ? new Date(meta[0].updated_at).toISOString() : null;
-  const hasSnapshot = user.role !== "shipper"
-    || Boolean((await sql`SELECT 1 FROM mealfit_sync_meta WHERE key = ${`shipper-order-snapshot:${user.id}`} LIMIT 1`).length);
-  const recent = body.force !== true && hasSnapshot && meta[0] && Date.now() - new Date(meta[0].updated_at).valueOf() < 15_000;
   let count = 0;
   let received = 0;
   let pages = 0;
-  let usedCache = false;
   let pendingCount = 0;
   let conflictCount = 0;
   let stage = "n8n-fetch";
   try {
-    await acquireUserRefreshSlot(sql, user.id);
-    const unverifiedPush = recent ? await sql`SELECT 1 FROM mealfit_upstream_outbox AS outbox
-      JOIN mealfit_operations AS operation ON operation.operation_id = outbox.operation_id AND operation.entity_type = 'order'
-      WHERE outbox.status = 'sent' AND outbox.updated_at > ${previousPullAt}::timestamptz
-        AND (${user.role !== "shipper"} OR operation.actor_id = ${user.id})
-      LIMIT 1` : [];
-    usedCache = Boolean(recent && !unverifiedPush.length);
     const pending = await sql`SELECT outbox.status, count(*)::int AS count
       FROM mealfit_upstream_outbox AS outbox
       WHERE outbox.status IN ('queued', 'sending', 'failed', 'conflict')
@@ -114,20 +72,13 @@ export default handler(async (req, res) => {
       GROUP BY outbox.status`;
     pendingCount = pending.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
     conflictCount = pending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
-    if (usedCache) {
-      if (pendingCount) await scheduleUserOutboxFlush(sql, user);
-      req.apiLogDetail = { stage: "cache", pending: pendingCount, conflicts: conflictCount };
-      send(res, 200, { ok: true, refreshed: false, imported: 0, pendingUpstream: pendingCount, conflicts: conflictCount, message: "Dữ liệu vừa được đồng bộ." });
-      return;
-    }
     try {
       const shipperNames = user.role === "shipper" ? sheetShipperNames(user).filter(Boolean) : [""];
       if (user.role === "shipper" && !shipperNames.length) throw new AppError(400, "SHIPPER_NAME_REQUIRED", "Tài khoản shipper chưa có tên để lọc đơn hàng.");
-      const previousPull = meta[0]?.updated_at ? new Date(new Date(meta[0].updated_at).valueOf() - 120_000).toISOString() : "";
       stage = "n8n-fetch";
       // Fetch each current or legacy shipper name so the webhook filters rows before pagination.
       const verificationCutoff = new Date().toISOString();
-      const pull = await fetchSheetOrdersForShippers({ shippers: shipperNames, limit: 500, modifiedSince: user.role === "shipper" ? "" : previousPull });
+      const pull = await fetchSheetOrdersForShippers({ shippers: shipperNames, limit: 500 });
       const allowedShippers = user.role === "shipper"
         ? new Set(shipperNames.map(name => name.trim().toLocaleLowerCase("vi-VN")))
         : null;
@@ -136,9 +87,8 @@ export default handler(async (req, res) => {
         : pull.rows;
       received = rows.length;
       pages = pull.pages;
-      if (body.force === true && pendingCount === 0) {
-        await reconcileUpstreamWithSheet(rows);
-        const reconciledPending = await sql`SELECT outbox.status, count(*)::int AS count
+      await reconcileUpstreamWithSheet(rows);
+      const reconciledPending = await sql`SELECT outbox.status, count(*)::int AS count
           FROM mealfit_upstream_outbox AS outbox
           WHERE outbox.status IN ('queued', 'sending', 'failed', 'conflict')
             AND (${user.role !== "shipper"} OR EXISTS (
@@ -149,9 +99,8 @@ export default handler(async (req, res) => {
               WHERE order_row.code = outbox.order_code AND order_row.assigned_user_id = ${user.id}
             ))
           GROUP BY outbox.status`;
-        pendingCount = reconciledPending.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
-        conflictCount = reconciledPending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
-      }
+      pendingCount = reconciledPending.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
+      conflictCount = reconciledPending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
       stage = "sheet-verification";
       const sentUpdates = await sql`SELECT DISTINCT ON (outbox.order_code)
           outbox.order_code, outbox.request_body, outbox.target_revision
@@ -165,19 +114,31 @@ export default handler(async (req, res) => {
       const mismatches = sheetUpdateMismatches(sentUpdates, rows);
       if (mismatches.length) {
         req.apiLogDetail = { stage, mismatches: mismatches.length, codes: mismatches.slice(0, 5) };
-        throw new AppError(502, "SHEET_CONFIRMATION_MISMATCH", `Google Sheet chưa xác nhận phiên bản hoặc trạng thái mới cho ${mismatches.slice(0, 5).join(", ")}. Vui lòng thử đồng bộ lại.`);
+        await sql`UPDATE mealfit_upstream_outbox SET status = 'conflict', last_error = 'SHEET_STATE_DIVERGED', updated_at = now()
+          WHERE status = 'sent' AND order_code = ANY(${mismatches}::text[])`;
+        await reconcileUpstreamWithSheet(rows);
       }
       stage = "postgres-import";
-      count = await importSheetOrders(rows);
+      count = await importSheetOrders(rows, { sheetAuthoritative: true });
+      const sheetCodes = [...new Set(rows.map(row => String(row?.["Mã đơn"] || row?.code || "").trim()).filter(Boolean))];
+      if (sheetCodes.length) {
+        await sql`UPDATE mealfit_operations operation
+          SET result = COALESCE(operation.result, '{}'::jsonb) || '{"conflict":true,"errorCode":"SHEET_SOURCE_WINS"}'::jsonb
+          FROM mealfit_upstream_outbox outbox
+          WHERE operation.operation_id = outbox.operation_id AND operation.entity_type = 'order'
+            AND outbox.order_code = ANY(${sheetCodes}::text[]) AND outbox.status = 'conflict'`;
+        await sql`UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now()
+          WHERE order_code = ANY(${sheetCodes}::text[]) AND status = 'conflict'`;
+        await sql`UPDATE mealfit_conflicts SET status = 'resolved-sheet', resolved_by = ${user.id}, resolved_at = now()
+          WHERE order_code = ANY(${sheetCodes}::text[]) AND status = 'open'`;
+      }
       if (user.role === "shipper") {
-        const codes = [...new Set(rows.map(row => String(row?.["Mã đơn"] || row?.code || "").trim()).filter(Boolean))];
         await sql`INSERT INTO mealfit_sync_meta (key, value, updated_at)
-          VALUES (${`shipper-order-snapshot:${user.id}`}, ${JSON.stringify({ codes })}::jsonb, now())
+          VALUES (${`shipper-order-snapshot:${user.id}`}, ${JSON.stringify({ codes: sheetCodes })}::jsonb, now())
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
       }
       stage = "sync-checkpoint";
       await markSheetPull(count, syncKey);
-      if (pendingCount) await scheduleUserOutboxFlush(sql, user);
     } catch (error) {
       req.apiLogDetail ||= { stage, received, imported: count, pages };
       if (error instanceof AppError) throw error;
@@ -204,6 +165,6 @@ export default handler(async (req, res) => {
     GROUP BY outbox.status`;
   pendingCount = currentPending.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
   conflictCount = currentPending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
-  req.apiLogDetail = { stage: usedCache ? "cache" : "complete", received, imported: count, pages, pendingUpstream: pendingCount, conflicts: conflictCount };
-  send(res, 200, { ok: true, refreshed: !usedCache, imported: count, pendingUpstream: pendingCount, conflicts: conflictCount, message: usedCache ? "Dữ liệu vừa được đồng bộ." : "Đã cập nhật từ Google Sheet." });
+  req.apiLogDetail = { stage: "complete", received, imported: count, pages, pendingUpstream: pendingCount, conflicts: conflictCount };
+  send(res, 200, { ok: true, refreshed: true, imported: count, pendingUpstream: pendingCount, conflicts: conflictCount, message: "Đã cập nhật từ Google Sheet." });
 });

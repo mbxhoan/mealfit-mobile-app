@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { waitUntil } from "@vercel/functions";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { withTransaction } from "../server-lib/db.mjs";
 import { sheetOrderBelongsToShipper } from "../server-lib/accounts.mjs";
 import { DELIVERY_STATUSES, PAYMENT_STATUSES, PAYMENT_METHODS, validateOrderMutation } from "../server-lib/orders.mjs";
-import { queueUpstream, flushUpstream } from "../server-lib/upstream.mjs";
+import { queueUpstream, flushUpstream, pendingUpstream } from "../server-lib/upstream.mjs";
 
 const hash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
@@ -143,10 +142,23 @@ export default handler(async (req, res) => {
     }
     return output;
   });
-  const orderCodes = [...new Set(operations.flatMap(operation => operation.type === "order"
-    ? [operation.entityId || operation.payload?.id]
-    : operation.type === "session" ? operation.payload?.orderIds || [] : []).filter(Boolean).map(String))];
-  if (orderCodes.length) waitUntil(flushUpstream(50, orderCodes).catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
+  const orderCodes = [...new Set(operations
+    .filter(operation => operation.type === "order")
+    .map(operation => operation.entityId || operation.payload?.id)
+    .filter(Boolean).map(String))];
+  if (orderCodes.length) {
+    await flushUpstream(50, orderCodes);
+    const pending = await pendingUpstream(orderCodes);
+    const conflicts = new Set(pending.filter(item => item.status === "conflict").map(item => item.order_code));
+    if (conflicts.size) {
+      send(res, 409, {
+        error: { code: "SHEET_REVISION_CONFLICT", message: "Google Sheet đã có dữ liệu mới hơn. Danh sách sẽ được làm mới từ Sheet." },
+        results: results.map(result => conflicts.has(result.code) ? { ...result, conflict: true, errorCode: "SHEET_REVISION_CONFLICT" } : result)
+      });
+      return;
+    }
+    if (pending.length) throw new AppError(503, "SHEET_UPDATE_PENDING", "Webhook n8n chưa xác nhận cập nhật. Thao tác vẫn được giữ để thử lại.");
+  }
   const conflict = results.find(result => result.conflict && result.errorCode !== "SESSION_ORDER_FORBIDDEN")
     || results.find(result => result.conflict);
   if (conflict) {

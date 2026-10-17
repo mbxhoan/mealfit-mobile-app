@@ -20,4 +20,4 @@ npm run build
 
 ## Triển khai và vận hành
 
-Xem [docs/OPERATIONS.md](docs/OPERATIONS.md) để tạo project Vercel riêng, cấu hình Neon và Blob, chuẩn bị workflow n8n, backup, khôi phục và các điều kiện trước khi dùng dữ liệu đơn thật. Project dùng một cron bảo trì mỗi ngày; thao tác đồng bộ thông thường chạy ngay sau khi ghi Postgres và trên client khi có mạng.
+Xem [docs/OPERATIONS.md](docs/OPERATIONS.md) để tạo project Vercel riêng, cấu hình Neon và Blob, chuẩn bị workflow n8n, backup, khôi phục và các điều kiện trước khi dùng dữ liệu đơn thật. Sheet qua webhook n8n là nguồn chuẩn của đơn hàng; Neon lưu bản sao dự phòng và phiên. Thao tác đổi đơn chờ webhook xác nhận trước khi API báo đồng bộ thành công.

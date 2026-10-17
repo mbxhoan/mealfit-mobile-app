@@ -51,6 +51,18 @@ test("shipper route selection only allows assigned, not-yet-delivered orders", (
   assert.equal(isAssignedPendingOrder(assignedPending, null), false);
 });
 
+test("unpaid status repairs stale paid amounts from a completed route", () => {
+  const stale = {
+    id: "A", total: 100_000, paidAmount: 100_000, remainingDue: 0,
+    paymentStatus: "Chưa thanh toán", deliveryStatus: "Chưa giao hàng"
+  };
+  const normalized = normalizeState({ orders: [stale], sessions: [], activeSessionId: null });
+
+  assert.equal(dueAmount(order(normalized, "A")), 100_000);
+  assert.equal(order(normalized, "A").paidAmount, 0);
+  assert.equal(order(normalized, "A").remainingDue, 100_000);
+});
+
 test("missing critical order fields warn without blocking route creation", () => {
   const incomplete = {
     id: "DH0001", customer: "Khách A", phone: "", address: "Quận 1", total: 100_000,
@@ -250,6 +262,23 @@ test("deleting a started session removes the route and resets only in-progress o
   assert.equal(order(deleted, "A").sessionId, null);
   assert.equal(order(deleted, "B").sessionId, null);
   assert.equal(order(deleted, "C").sessionId, null);
+});
+
+test("deleting a session clears stale route fields on every unfinished stop", () => {
+  const state = createSession(seed(), ["B"], { B: "Sáng" }, 1000);
+  const sessionId = state.activeSessionId;
+  const withStaleRouteFields = {
+    ...state,
+    orders: state.orders.map(item => item.id === "B"
+      ? { ...item, deliveryStatus: "Chưa giao hàng", deliveryMethod: "Phiên giao hàng", sessionId, deliveredAt: 2000 }
+      : item)
+  };
+
+  const deleted = deleteSession(withStaleRouteFields, sessionId);
+  assert.equal(order(deleted, "B").deliveryStatus, "Chưa giao hàng");
+  assert.equal(order(deleted, "B").deliveryMethod, null);
+  assert.equal(order(deleted, "B").sessionId, null);
+  assert.equal(order(deleted, "B").deliveredAt, null);
 });
 
 test("route stats count session cash and transfer collections, route value and completed shifts", () => {

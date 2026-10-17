@@ -135,7 +135,7 @@ export async function commitState(nextState, previousState, userId) {
   await complete(tx);
 }
 
-export async function mergeRemote({ orders = [], sessions = [] }, userId) {
+export async function mergeRemote({ orders = [], sessions = [], sheetAuthoritative = false }, userId) {
   const db = await openLocalDb();
   const tx = db.transaction(["state", "outbox"], "readwrite");
   const stateStore = tx.objectStore("state");
@@ -149,11 +149,12 @@ export async function mergeRemote({ orders = [], sessions = [] }, userId) {
       const pending = await requestValue(outbox.index("entityKey").getAll(key));
       const current = items.get(item.id);
       const blocked = pending.filter(operation => operation.status !== "done");
-      if (blocked.some(operation => operation.status !== "conflict")) continue;
-      if (blocked.length && Number(item.serverRevision || 0) < Number(current?.serverRevision || 0)) continue;
-      if (blocked.length) for (const operation of blocked) outbox.delete(operation.id);
+      if (sheetAuthoritative) for (const operation of blocked.filter(item => item.status === "conflict")) outbox.delete(operation.id);
+      if (!sheetAuthoritative && blocked.some(operation => operation.status !== "conflict")) continue;
+      if (!sheetAuthoritative && blocked.length && Number(item.serverRevision || 0) < Number(current?.serverRevision || 0)) continue;
+      if (!sheetAuthoritative && blocked.length) for (const operation of blocked) outbox.delete(operation.id);
       if (type === "session" && item.deleted) { items.delete(item.id); continue; }
-      if (!current || Number(item.serverRevision || 0) >= Number(current.serverRevision || 0)) items.set(item.id, clone(item));
+      if (sheetAuthoritative || !current || Number(item.serverRevision || 0) >= Number(current.serverRevision || 0)) items.set(item.id, clone(item));
     }
     state[property] = [...items.values()];
   };

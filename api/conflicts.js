@@ -1,9 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { getSql, withTransaction } from "../server-lib/db.mjs";
-import { normalizeSheetOrder, validateOrderMutation } from "../server-lib/orders.mjs";
-import { queueUpstream } from "../server-lib/upstream.mjs";
+import { normalizeSheetOrder } from "../server-lib/orders.mjs";
 
 export default handler(async (req, res) => {
   const user = await requireUser(req);
@@ -16,7 +14,7 @@ export default handler(async (req, res) => {
   requireMethod(req, "POST");
   assertSameOrigin(req);
   const body = await readJson(req);
-  if (!body.id || !["sheet", "app"].includes(body.resolution)) throw new AppError(400, "INVALID_RESOLUTION", "Chọn dữ liệu Sheet hoặc ứng dụng để xử lý xung đột.");
+  if (!body.id || body.resolution !== "sheet") throw new AppError(400, "INVALID_RESOLUTION", "Dữ liệu Google Sheet là nguồn chuẩn để xử lý xung đột.");
   const result = await withTransaction(async client => {
     const found = await client.query("SELECT * FROM mealfit_conflicts WHERE conflict_id = $1 AND status = 'open' FOR UPDATE", [String(body.id)]);
     const conflict = found.rows[0];
@@ -32,21 +30,9 @@ export default handler(async (req, res) => {
         payment_status = $11, shipping_status = $12, shipper_name = $13, assigned_user_id = $14,
         note = $15, items = COALESCE($16::jsonb, items), source_revision = $17, revision = revision + 1, updated_at = now() WHERE code = $18`,
         [JSON.stringify(conflict.sheet_payload), order.customer, order.phone, order.address, order.date, order.subtotal, order.shippingFee, order.total, order.paidAmount, order.remainingDue, order.paymentStatus, order.deliveryStatus, order.shipperName || "Chưa phân công", order.assignedUserId, order.note, JSON.stringify(order.items || null), order.sourceRevision, conflict.order_code]);
-    } else {
-      const order = validateOrderMutation(conflict.app_payload);
-      const nextRevision = Number(current.revision) + 1;
-      const sheetRevision = Number(conflict.sheet_payload?.revision ?? conflict.sheet_payload?.Revision ?? conflict.sheet_revision) || 0;
-      await client.query(`UPDATE mealfit_orders SET shipping_status = $1, payment_status = $2, paid_amount = $3,
-        remaining_due = $4, shipper_name = $5, note = $6, maps_url = $7, session_id = $8,
-        source_revision = $10, row_data = jsonb_set(row_data, '{revision}', to_jsonb($10::bigint), true),
-        revision = $9, updated_at = now() WHERE code = $11`,
-        [order.deliveryStatus, order.paymentStatus, order.paidAmount, order.paymentStatus === "Đã thanh toán" ? 0 : order.remainingDue,
-          order.shipperName, order.note, order.mapsLink || "", order.sessionId || null, nextRevision, sheetRevision, conflict.order_code]);
-      await client.query("UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now() WHERE order_code = $1 AND status = 'conflict'", [conflict.order_code]);
-      await queueUpstream(client, randomUUID(), { ...order, id: conflict.order_code }, nextRevision);
     }
-    if (body.resolution === "sheet") await client.query("UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now() WHERE order_code = $1 AND status = 'conflict'", [conflict.order_code]);
-    await client.query("UPDATE mealfit_conflicts SET status = $1, resolved_by = $2, resolved_at = now() WHERE conflict_id = $3", [body.resolution === "sheet" ? "resolved-sheet" : "resolved-app", user.id, body.id]);
+    await client.query("UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now() WHERE order_code = $1 AND status = 'conflict'", [conflict.order_code]);
+    await client.query("UPDATE mealfit_conflicts SET status = 'resolved-sheet', resolved_by = $1, resolved_at = now() WHERE conflict_id = $2", [user.id, body.id]);
     await client.query("INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, detail) VALUES ($1, 'order', $2, 'resolve-conflict', $3::jsonb)", [user.id, conflict.order_code, JSON.stringify({ resolution: body.resolution })]);
     return { code: conflict.order_code, resolution: body.resolution };
   });
