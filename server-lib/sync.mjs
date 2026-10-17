@@ -20,6 +20,15 @@ export function sheetOrderMatchesPayload(row, body) {
     && String(row["Ghi chú bởi shipper"] ?? row.note ?? "") === String(body.note ?? "");
 }
 
+export function sheetUpdateMatches(row, body) {
+  const expectedRevision = Number(body?.expected_revision) + 1;
+  const sheetRevision = Number(row?.revision ?? row?.Revision);
+  return sheetOrderMatchesPayload(row, body)
+    && Number.isSafeInteger(expectedRevision)
+    && Number.isSafeInteger(sheetRevision)
+    && sheetRevision >= expectedRevision;
+}
+
 export function sheetUpdateMismatches(updates, rows) {
   const latest = new Map();
   for (const update of updates) {
@@ -31,7 +40,7 @@ export function sheetUpdateMismatches(updates, rows) {
   const sheetOrders = new Map(rows.map(row => [String(row?.["Mã đơn"] || row?.code || "").trim(), row]));
   return [...latest].filter(([code, update]) => {
     const row = sheetOrders.get(code);
-    return !sheetOrderMatchesPayload(row, { ...(update.request_body || {}), code });
+    return !sheetUpdateMatches(row, { ...(update.request_body || {}), code });
   }).map(([code]) => code);
 }
 

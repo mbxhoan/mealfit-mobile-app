@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appLogPayload, fetchSheetOrders, fetchSheetOrdersForShippers, n8nRequest } from "./n8n.mjs";
+import { appLogPayload, fetchSheetOrders, fetchSheetOrdersForShippers, n8nRequest, pushSheetOrder } from "./n8n.mjs";
 import { recordBatches } from "./sync.mjs";
 
 test("app logs only accept supported types and always target the fixed sheet", () => {
@@ -121,6 +121,37 @@ test("long webhook Retry-After reaches the caller without an automatic retry", a
 
   await assert.rejects(n8nRequest("log", { method: "POST" }), error => error.retryAfterSeconds === 60);
   assert.equal(calls, 1);
+});
+
+test("shipping-order only confirms a fallback response with the new Sheet revision", async t => {
+  const original = {
+    fetch: globalThis.fetch,
+    base: process.env.N8N_BASE_URL,
+    key: process.env.N8N_API_KEY,
+    vercel: process.env.VERCEL,
+    vercelEnv: process.env.VERCEL_ENV
+  };
+  t.after(() => {
+    globalThis.fetch = original.fetch;
+    for (const [key, value] of [["N8N_BASE_URL", original.base], ["N8N_API_KEY", original.key], ["VERCEL", original.vercel], ["VERCEL_ENV", original.vercelEnv]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  process.env.N8N_BASE_URL = "https://example.test/webhook";
+  process.env.N8N_API_KEY = "test-only-secret";
+  delete process.env.VERCEL;
+  delete process.env.VERCEL_ENV;
+  const body = {
+    sheet_id: "test-sheet", code: "DH0001", shipper: "Hiếu", total: "100000",
+    payment_staus: "Đã thanh toán", shipping_status: "Đã giao hàng", note: "",
+    expected_revision: 4, operation_id: "operation-id"
+  };
+  globalThis.fetch = async () => Response.json({ ...body, "Mã đơn": body.code, Shipper: body.shipper,
+    "Đã thanh toán": body.total, "Trạng thái đơn": body.payment_staus,
+    "Trạng thái giao hàng": body.shipping_status, "Ghi chú bởi shipper": body.note, revision: 5 });
+
+  const result = await pushSheetOrder(body, body.operation_id);
+  assert.equal(result.revision, 5);
 });
 
 test("shipping-orders accepts n8n's total/data response and preserves all returned rows", async t => {

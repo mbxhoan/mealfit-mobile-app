@@ -70,7 +70,10 @@ let routeDragFrame = null;
 let toastTimer = null;
 let retryCountdownTimer = null;
 let networkProbeTimer = null;
+let changesPollTimer = null;
 let syncRunning = false;
+let syncKickTimer = null;
+let syncRetryDelay = 1_500;
 let appLogRunning = false;
 let photoSyncRunning = false;
 let sheetSyncRunning = false;
@@ -80,6 +83,7 @@ let stateWriteRunning = false;
 let lastServerRtt = null;
 let lastSyncAt = null;
 let conflictCount = 0;
+let changesPullRunning = false;
 let activityKind = "api";
 let activityRows = [];
 let activityCursor = "";
@@ -187,8 +191,14 @@ function updateNetworkIndicator() {
   indicator.className = `network-indicator signal-${signal}`;
   indicator.setAttribute("aria-label", user ? `Kiểm tra API · ${networkLabels[signal]}` : networkLabels[signal]);
 }
-window.addEventListener("online", updateNetworkIndicator);
+window.addEventListener("online", () => { updateNetworkIndicator(); scheduleQueuedSync(0); });
 window.addEventListener("offline", updateNetworkIndicator);
+window.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && user) {
+    void pullChanges({ silent: true });
+    scheduleQueuedSync(0);
+  }
+});
 networkConnection?.addEventListener?.("change", updateNetworkIndicator);
 
 async function probeNetwork() {
@@ -853,6 +863,31 @@ async function updateState(next, message) {
   lastPersistedState = cloneState(state);
   render();
   if (message) flash(`${message} · Đã lưu trên thiết bị`);
+  scheduleQueuedSync();
+}
+
+function scheduleQueuedSync(delay = 120) {
+  if (!user || !navigator.onLine) return;
+  clearTimeout(syncKickTimer);
+  syncKickTimer = setTimeout(async () => {
+    syncKickTimer = null;
+    if (!user || !navigator.onLine) return;
+    if (syncRunning || sheetSyncRunning) { scheduleQueuedSync(350); return; }
+    try {
+      await syncQueued();
+      syncRetryDelay = 1_500;
+    } catch (error) {
+      if (error.status === 401) { void logout(); return; }
+      if ([400, 403, 404, 409].includes(error.status)) {
+        if (!syncErrorShown) { syncErrorShown = true; showError(error); }
+        return;
+      }
+      const retryIn = syncRetryDelay;
+      syncRetryDelay = Math.min(30_000, syncRetryDelay * 2);
+      scheduleQueuedSync(retryIn);
+      if (!syncErrorShown) { syncErrorShown = true; showError(error); }
+    }
+  }, delay);
 }
 
 async function syncQueued() {
@@ -887,7 +922,7 @@ async function syncQueued() {
             }
           }
         }
-        const result = await apiRequest("/api/operations", { method: "POST", body: { operations }, timeout: 330_000 });
+        const result = await apiRequest("/api/operations", { method: "POST", body: { operations }, timeout: 20_000 });
         const byId = new Map((result.results || []).map(item => [item.id, item]));
         for (const item of batch) {
           const acknowledgement = byId.get(item.id);
@@ -913,8 +948,8 @@ async function syncQueued() {
         break;
       }
     }
-    await syncPendingPhotos();
-    await syncPendingMediaDeletes();
+    void syncPendingPhotos();
+    void syncPendingMediaDeletes().catch(() => {});
     if (hasOperations) {
       if (sessionConflicts.size) {
         const snapshot = await readState(emptyState(), user.id);
@@ -1011,32 +1046,50 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   let sheetRefreshFailed = false;
   let syncError = null;
   let sessionConflicts = [];
+  let refreshAuthError = null;
+  let refreshRequest = null;
   try {
-    try { await refreshAccounts(); } catch { /* order sync can use the authenticated account already loaded */ }
     if (sheet) {
+      const accountsRequest = refreshAccounts().catch(() => {});
       try { sessionConflicts = (await syncQueued()).sessionConflicts; }
       catch (error) { if (error.status === 401) throw error; syncError = error; }
+      await accountsRequest;
       if (!syncError) {
-        try { pendingUpstream = Number((await apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 330_000 })).pendingUpstream) || 0; }
-        catch (error) { if (error.status === 401) throw error; sheetRefreshFailed = true; }
+        const cursorKey = `changeCursor:${user.id}`;
+        if (await getMeta(cursorKey) == null) {
+          const baseline = await apiRequest("/api/changes?baseline=1");
+          await setMeta(cursorKey, baseline.cursor || "0");
+        }
+        refreshRequest = apiRequest("/api/refresh", { method: "POST", body: { force }, timeout: 330_000 })
+          .then(result => { pendingUpstream = Number(result.pendingUpstream) || 0; })
+          .catch(error => {
+            if (error.status === 401) refreshAuthError = error;
+            sheetRefreshFailed = true;
+          });
       }
     }
     let cursor = null;
     let first = true;
     let shipperSnapshot = false;
     const visibleOrderIds = new Set();
+    const params = new URLSearchParams({ limit: "100" });
+    const [firstPage, sessions] = await Promise.all([
+      apiRequest(`/api/orders?${params}`, { timeout: 60_000 }),
+      apiRequest("/api/sessions", { timeout: 60_000 })
+    ]);
+    let page = firstPage;
     do {
-      const params = new URLSearchParams({ limit: "100" });
-      if (cursor) params.set("cursor", cursor);
-      const page = await apiRequest(`/api/orders?${params}`, { timeout: 60_000 });
       if (first) { shipperSnapshot = page.shipperSnapshot === true; first = false; }
       if (shipperSnapshot) for (const order of page.data || []) if (order?.id) visibleOrderIds.add(order.id);
       state = normalizeState(await mergeRemote({ orders: page.data || [] }, user.id));
       lastPersistedState = cloneState(state);
       cursor = page.nextCursor;
       render();
+      if (cursor) {
+        const nextParams = new URLSearchParams({ limit: "100", cursor });
+        page = await apiRequest(`/api/orders?${nextParams}`, { timeout: 60_000 });
+      }
     } while (cursor);
-    const [sessions] = await Promise.all([apiRequest("/api/sessions", { timeout: 60_000 })]);
     const remoteSessions = sessions.data || [];
     const conflictedSessionIds = new Set([
       ...sessionConflicts,
@@ -1057,9 +1110,15 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
       state.visibleOrderIds = [...visibleOrderIds];
       await writeStateSnapshot(state, user.id);
     }
+    if (refreshRequest) {
+      await refreshRequest;
+      await pullChanges({ silent: true, allowDuringRefresh: true });
+      if (refreshAuthError) throw refreshAuthError;
+    }
     lastPersistedState = cloneState(state);
     if (role === "admin") {
-      try { conflictCount = (await apiRequest("/api/conflicts")).data.length; } catch { conflictCount = 0; }
+      try { conflictCount = (await apiRequest("/api/conflicts")).data.length; }
+      catch { conflictCount = 0; }
     }
     lastSyncAt = Date.now();
     await setMeta(`lastSync:${user.id}`, lastSyncAt);
@@ -1074,25 +1133,55 @@ async function pullRemoteOrders({ sheet = false, force = false } = {}) {
   return { pendingUpstream, sheetRefreshFailed, syncError, sessionConflicts };
 }
 
-async function pullChanges() {
-  if (!user || !navigator.onLine) return;
+async function pullChanges({ silent = false, allowDuringRefresh = false } = {}) {
+  if (!user || !navigator.onLine || syncRunning || (sheetSyncRunning && !allowDuringRefresh)) return;
+  if (changesPullRunning) {
+    if (!allowDuringRefresh) return;
+    while (changesPullRunning) await new Promise(resolve => setTimeout(resolve, 25));
+    return pullChanges({ silent, allowDuringRefresh });
+  }
+  changesPullRunning = true;
   try {
-    let cursor = await getMeta(`changeCursor:${user.id}`) || "";
+    const cursorKey = `changeCursor:${user.id}`;
+    let cursor = await getMeta(cursorKey);
+    if (cursor == null) {
+      const baseline = await apiRequest("/api/changes?baseline=1");
+      await pullRemoteOrders();
+      await setMeta(cursorKey, baseline.cursor || "0");
+      return;
+    }
+    let changed = false;
     for (let pass = 0; pass < 10; pass++) {
       const params = new URLSearchParams({ limit: "100" });
       if (cursor) params.set("cursor", cursor);
       const page = await apiRequest(`/api/changes?${params}`);
-      state = normalizeState(await mergeRemote({ orders: page.orders || [], sessions: page.sessions || [] }, user.id));
-      lastPersistedState = cloneState(state);
+      if (page.orders?.length || page.sessions?.length) {
+        state = normalizeState(await mergeRemote({ orders: page.orders || [], sessions: page.sessions || [] }, user.id));
+        if (role === "shipper" && Array.isArray(state.visibleOrderIds)) {
+          const visibleOrderIds = new Set(state.visibleOrderIds);
+          for (const order of page.orders || []) if (order?.id) visibleOrderIds.add(order.id);
+          for (const session of page.sessions || []) {
+            if (!session.syncConflict && ["notStarted", "active", "paused"].includes(session.status)) {
+              for (const id of session.orderIds || []) visibleOrderIds.add(id);
+            }
+          }
+          state.visibleOrderIds = [...visibleOrderIds];
+          await writeStateSnapshot(state, user.id);
+        }
+        lastPersistedState = cloneState(state);
+        changed = true;
+      }
       cursor = page.nextCursor || cursor;
       if (page.nextCursor) await setMeta(`changeCursor:${user.id}`, page.nextCursor);
       if (!page.hasMore) break;
     }
-    syncErrorShown = false;
-    render();
+    if (!silent) syncErrorShown = false;
+    if (changed) render();
   } catch (error) {
     if (error.status === 401) void logout();
-    else if (!syncErrorShown) { syncErrorShown = true; showError(error); }
+    else if (!silent && !syncErrorShown) { syncErrorShown = true; showError(error); }
+  } finally {
+    changesPullRunning = false;
   }
 }
 
@@ -1113,11 +1202,15 @@ async function syncOrderDetail(orderId) {
 
 function startNetworkMonitor() {
   clearInterval(networkProbeTimer);
+  clearInterval(changesPollTimer);
   if (!user) return;
   void probeNetwork();
   networkProbeTimer = setInterval(() => {
     if (document.visibilityState === "visible") void probeNetwork();
   }, 12_000);
+  changesPollTimer = setInterval(() => {
+    if (document.visibilityState === "visible") void pullChanges({ silent: true });
+  }, 5_000);
 }
 
 const validViewNames = new Set(["home", "orders", "sessions-overview", "session-create", "session", "add-orders", "order", "accounts"]);
@@ -1145,10 +1238,20 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
   appInitialized = true;
   render();
   startNetworkMonitor();
-  if (refresh && shouldRunFirstSync && navigator.onLine) {
-    try { await pullRemoteOrders({ sheet: true }); }
-    catch (error) { showError(error); }
+  if (refresh && navigator.onLine) {
+    try {
+      if (shouldRunFirstSync) {
+        const cursorKey = `changeCursor:${user.id}`;
+        const previousCursor = await getMeta(cursorKey);
+        const baseline = previousCursor == null ? await apiRequest("/api/changes?baseline=1") : null;
+        await pullRemoteOrders({ sheet: true });
+        if (baseline) await setMeta(cursorKey, baseline.cursor || "0");
+      } else {
+        await pullChanges();
+      }
+    } catch (error) { showError(error); }
   }
+  if (navigator.onLine) scheduleQueuedSync(0);
 }
 
 async function restoreOfflineUser(userId) {
@@ -1161,6 +1264,7 @@ async function restoreOfflineUser(userId) {
 
 async function logout() {
   clearInterval(networkProbeTimer);
+  clearInterval(changesPollTimer);
   try { await apiRequest("/api/auth/logout", { method: "POST", body: {} }); } catch { /* local logout must work offline */ }
   await setMeta("lastUser", null);
   role = null;
@@ -1443,7 +1547,6 @@ async function deliverOrder(orderId) {
     const next = markDelivered(state, orderId);
     if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
     await updateState(next, "Đã ghi nhận giao hàng.");
-    if (navigator.onLine) await syncQueued();
   } catch (error) { flash(error.message); }
 }
 
@@ -1795,7 +1898,6 @@ app.addEventListener("click", async event => {
     if (role !== "shipper") { flash("Chỉ shipper có thể bắt đầu phiên."); return; }
     try {
       await updateState(startSession(state), "Bắt đầu giao hàng.");
-      if (navigator.onLine) await syncQueued();
     } catch (error) { flash(error.message); }
     return;
   }
@@ -1936,7 +2038,6 @@ app.addEventListener("click", async event => {
         : status === "Đã giao hàng" ? "Đã đánh dấu đơn đã giao."
           : "Đã hủy đơn.";
       await updateState(next, message);
-      if (status === "Đã giao hàng" && navigator.onLine) await syncQueued();
     } catch (error) { modal = null; render(); flash(error.message); }
     return;
   }
@@ -1951,7 +2052,6 @@ app.addEventListener("click", async event => {
       if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
       modal = null;
       await updateState(next, "Đã giao hàng, khoản phải thu vẫn được ghi nhận.");
-      if (navigator.onLine) await syncQueued();
     }
     catch (error) { modal = null; render(); flash(error.message); }
     return;

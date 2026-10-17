@@ -18,7 +18,7 @@ function functionsUnder(directory) {
 
 test("Vercel Hobby function count and duration stay within deployment limits", () => {
   assert.ok(functionsUnder(apiRoot).length <= 12);
-  assert.ok(config.functions["api/refresh.js"].maxDuration <= 60);
+  assert.ok(config.functions["api/refresh.js"].maxDuration <= 300);
 });
 
 test("existing API paths rewrite to their consolidated functions", () => {

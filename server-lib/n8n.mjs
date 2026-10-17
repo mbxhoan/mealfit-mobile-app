@@ -217,6 +217,9 @@ export async function pushSheetOrder(body, idempotencyKey) {
   }
   if (Array.isArray(row)) row = row[0];
   if (row?.data && typeof row.data === "object") row = Array.isArray(row.data) ? row.data[0] : row.data;
-  if (!sheetOrderMatchesPayload(row, body)) throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Google Sheet chưa xác nhận nội dung cập nhật.");
-  return { status: "ok", revision: Number(body.expected_revision) + 1 };
+  const revision = Number(row?.revision ?? row?.Revision);
+  if (!sheetOrderMatchesPayload(row, body) || !Number.isSafeInteger(revision) || revision <= Number(body.expected_revision)) {
+    throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Google Sheet chưa xác nhận nội dung và phiên bản cập nhật.");
+  }
+  return { status: "ok", revision };
 }

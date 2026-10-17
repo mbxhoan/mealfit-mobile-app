@@ -3,7 +3,7 @@ import { withAdvisoryLock, withTransaction, getSql } from "./db.mjs";
 import { AppError } from "./core.mjs";
 import { toN8nBody } from "./orders.mjs";
 import { sheetId, fetchSheetOrder, pushSheetOrder } from "./n8n.mjs";
-import { importSheetOrders, sheetOrderMatchesPayload } from "./sync.mjs";
+import { importSheetOrders, sheetUpdateMatches } from "./sync.mjs";
 
 export async function reconcileUpstreamWithSheet(rows) {
   const sheet = new Map(rows.map(row => [String(row?.["Mã đơn"] || row?.code || "").trim(), row]));
@@ -13,18 +13,19 @@ export async function reconcileUpstreamWithSheet(rows) {
     const pending = await client.query(`SELECT DISTINCT ON (order_code)
         operation_id, order_code, target_revision, request_body
       FROM mealfit_upstream_outbox
-      WHERE order_code = ANY($1::text[]) AND status IN ('queued', 'sending', 'failed', 'conflict')
+      WHERE order_code = ANY($1::text[]) AND status IN ('sending', 'failed', 'conflict') AND attempts > 0
       ORDER BY order_code, target_revision DESC, updated_at DESC`, [codes]);
     let confirmed = 0;
     let conflicts = 0;
     for (const item of pending.rows) {
-      const matches = sheetOrderMatchesPayload(sheet.get(item.order_code), { ...item.request_body, code: item.order_code });
+      const sheetRow = sheet.get(item.order_code);
+      const matches = sheetUpdateMatches(sheetRow, { ...item.request_body, code: item.order_code });
       if (matches) {
-        const revision = Number(item.request_body.expected_revision) + 1;
+        const revision = Number(sheetRow?.revision ?? sheetRow?.Revision ?? Number(item.request_body.expected_revision) + 1);
         await client.query(`UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now()
           WHERE order_code = $1 AND status IN ('queued', 'sending', 'failed', 'conflict')`, [item.order_code]);
         if (Number.isSafeInteger(revision)) await client.query(`UPDATE mealfit_orders
-          SET source_revision = GREATEST(source_revision, $2), synced_at = now()
+          SET source_revision = $2, row_data = jsonb_set(row_data, '{revision}', to_jsonb($2::bigint), true), synced_at = now()
           WHERE code = $1`, [item.order_code, revision]);
         confirmed++;
       } else {
@@ -51,7 +52,7 @@ export async function reconcileUpstreamWithSheet(rows) {
             WHERE NOT EXISTS (SELECT 1 FROM mealfit_conflicts WHERE order_code = $2 AND status = 'open')
             ON CONFLICT (conflict_id) DO NOTHING`, [
             `outbox-${item.operation_id}`, item.order_code, Number(order.revision) || 0,
-            Number(order.source_revision) || 0, JSON.stringify(appPayload), JSON.stringify(sheet.get(item.order_code))
+            Number(sheetRow?.revision ?? sheetRow?.Revision ?? order.source_revision) || 0, JSON.stringify(appPayload), JSON.stringify(sheetRow)
           ]);
         }
         conflicts++;

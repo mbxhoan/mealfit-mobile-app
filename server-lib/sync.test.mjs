@@ -19,6 +19,9 @@ test("Sheet confirmation requires the expected revision and both order statuses"
   assert.deepEqual(sheetUpdateMismatches(sent, [{
     "Mã đơn": "DH0001", revision: 3, "Trạng thái giao hàng": "Đã giao hàng", "Trạng thái đơn": "Đã thanh toán"
   }]), ["DH0001"]);
+  assert.deepEqual(sheetUpdateMismatches(sent, [{
+    "Mã đơn": "DH0001", revision: 5, "Trạng thái giao hàng": "Đã giao hàng", "Trạng thái đơn": "Đã thanh toán"
+  }]), []);
 });
 
 test("Sheet confirmation checks only the latest queued revision for each order", () => {

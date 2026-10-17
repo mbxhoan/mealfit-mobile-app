@@ -7,6 +7,12 @@ export default handler(async (req, res) => {
   requireMethod(req, "GET");
   const user = await requireUser(req);
   const url = new URL(req.url, `https://${req.headers.host || "mealfit.local"}`);
+  if (url.searchParams.get("baseline") === "1") {
+    const rows = await getSql()`SELECT COALESCE(MAX(audit_id), 0)::text AS cursor
+      FROM mealfit_audit_log WHERE entity_type IN ('order', 'session')`;
+    send(res, 200, { cursor: rows[0]?.cursor || "0" });
+    return;
+  }
   const cursor = Math.max(0, Number(url.searchParams.get("cursor")) || 0);
   const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 50));
   const rows = await getSql()`
