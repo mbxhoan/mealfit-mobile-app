@@ -200,7 +200,7 @@ export function markPaid(state, orderId, method, paidAt = Date.now()) {
   const amount = dueAmount(order);
   return updateOrder(state, orderId, current => ({
     ...current,
-    paidAmount: current.total,
+    paidAmount: Math.max(0, Number(current.paidAmount) || 0) + amount,
     remainingDue: 0,
     paymentStatus: "Đã thanh toán",
     paymentMethod: method,
@@ -237,7 +237,7 @@ export function createSession(state, orderIds, shiftsByOrder = {}, createdAt = D
     activeSessionId: session.id,
     sessions: [...state.sessions, session],
     orders: state.orders.map(order => ids.includes(order.id)
-      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), ...(Object.hasOwn(mapsLinks, order.id) ? { mapsLink: mapsLinks[order.id] } : {}), deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
+      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), ...(Object.hasOwn(mapsLinks, order.id) ? { mapsLink: mapsLinks[order.id] } : {}) }
       : order)
   };
 }
@@ -247,9 +247,13 @@ export function startSession(state, startedAt = Date.now()) {
   if (!session || session.status !== "notStarted") throw new Error("Phiên này đã bắt đầu hoặc không còn hoạt động.");
   if (!session.orderIds.length) throw new Error("Thêm ít nhất một đơn trước khi bắt đầu.");
   if (session.orderIds.some(id => !SHIFT_OPTIONS.includes(session.shifts?.[id]))) throw new Error("Phân ca cho tất cả đơn trước khi bắt đầu.");
+  if (session.orderIds.some(id => getOrder(state, id)?.deliveryStatus !== "Chưa giao hàng")) throw new Error("Một số đơn không còn ở trạng thái chưa giao.");
   return {
     ...state,
-    sessions: state.sessions.map(item => item.id === session.id ? { ...item, status: "active", startedAt } : item)
+    sessions: state.sessions.map(item => item.id === session.id ? { ...item, status: "active", startedAt } : item),
+    orders: state.orders.map(order => session.orderIds.includes(order.id)
+      ? { ...order, deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
+      : order)
   };
 }
 
@@ -324,7 +328,7 @@ export function addOrdersToSession(state, orderIds, shift = null, notesByOrder =
       stopStarts
     } : item),
     orders: state.orders.map(order => ids.includes(order.id)
-      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), ...(Object.hasOwn(mapsLinks, order.id) ? { mapsLink: mapsLinks[order.id] } : {}), deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
+      ? { ...order, ...(Object.hasOwn(notesByOrder, order.id) ? { note: String(notesByOrder[order.id] ?? "").trim() } : {}), ...(Object.hasOwn(mapsLinks, order.id) ? { mapsLink: mapsLinks[order.id] } : {}), ...(session.status === "active" ? { deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id } : {}) }
       : order)
   };
 }
@@ -439,7 +443,13 @@ export function reopenDeliveredOrder(state, orderId, deliveryStatus, shift, reop
         shifts,
         completedAt: null
       } : item),
-      orders: state.orders.map(item => item.id === orderId ? { ...item, deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: current.id, deliveredAt: null } : item)
+      orders: state.orders.map(item => item.id === orderId ? {
+        ...item,
+        deliveryStatus: current.status === "active" ? "Đang giao hàng" : "Chưa giao hàng",
+        deliveryMethod: current.status === "active" ? "Phiên giao hàng" : null,
+        sessionId: current.status === "active" ? current.id : null,
+        deliveredAt: null
+      } : item)
     };
   }
 

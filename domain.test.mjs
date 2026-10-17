@@ -72,11 +72,11 @@ test("missing critical order fields warn without blocking route creation", () =>
   assert.deepEqual(missingCriticalOrderFields(incomplete), ["SĐT", "trạng thái thanh toán", "trạng thái giao hàng"]);
   assert.deepEqual(missingCriticalOrderFields({ raw: { "Mã đơn": "DH0002" }, total: 0 }), ["tên khách", "SĐT", "địa chỉ", "số tiền", "trạng thái thanh toán", "trạng thái giao hàng"]);
   const created = createSession({ ...seed(), orders: [incomplete] }, ["DH0001"], "Sáng", 1000);
-  assert.equal(order(created, "DH0001").deliveryStatus, "Đang giao hàng");
+  assert.equal(order(created, "DH0001").deliveryStatus, "Chưa giao hàng");
   const existingSession = createSession({ ...seed(), orders: [...seed().orders, incomplete] }, ["A"], "Sáng", 2000);
   const added = addOrdersToSession(existingSession, ["DH0001"], "Tối");
   assert.ok(session(added).orderIds.includes("DH0001"));
-  assert.equal(order(added, "DH0001").deliveryStatus, "Đang giao hàng");
+  assert.equal(order(added, "DH0001").deliveryStatus, "Chưa giao hàng");
 });
 
 test("network signal maps offline and weak browser readings to semantic states", () => {
@@ -122,6 +122,17 @@ test("payment records only the remainder and tags collections made in an active 
   assert.equal(order(route, "B").payments.at(-1).sessionId, session(route).id);
 });
 
+test("payment sync records the collected remainder instead of the order value", () => {
+  const unpaid = {
+    id: "DH0924", total: 658_000, paidAmount: 0, remainingDue: 563_050,
+    paymentStatus: "Chưa thanh toán", deliveryStatus: "Đang giao hàng", sessionId: null, payments: []
+  };
+  const next = markPaid({ orders: [unpaid], sessions: [], activeSessionId: null }, unpaid.id, "Tiền mặt", 1000);
+
+  assert.equal(order(next, unpaid.id).paidAmount, 563_050);
+  assert.equal(order(next, unpaid.id).payments[0].amount, 563_050);
+});
+
 test("an active route can collect and deliver a later stop in another shift", () => {
   let state = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Tối" }, 1000), 2000);
   state = markPaid(state, "B", "Chuyển khoản", 3000);
@@ -140,8 +151,10 @@ test("an active route can collect and deliver a later stop in another shift", ()
 test("new session groups stops by shift and keeps route edits inside each shift", () => {
   let state = createSession(seed(), ["B", "A"], { A: "Sáng", B: "Chiều" }, 1000);
   assert.equal(session(state).status, "notStarted");
-  assert.equal(order(state, "A").deliveryStatus, "Đang giao hàng");
+  assert.equal(order(state, "A").deliveryStatus, "Chưa giao hàng");
+  assert.equal(order(state, "A").sessionId, null);
   state = addOrdersToSession(state, ["C"], "Tối");
+  assert.equal(order(state, "C").deliveryStatus, "Chưa giao hàng");
   state = moveOrderInSession(state, "C", -1);
   assert.deepEqual(session(state).orderIds, ["A", "B", "C"]);
   assert.equal(session(state).shifts.C, "Tối");
@@ -155,6 +168,9 @@ test("new session groups stops by shift and keeps route edits inside each shift"
   assert.equal(order(state, "B").deliveryStatus, "Chưa giao hàng");
   state = startSession(state, 2000);
   assert.equal(session(state).status, "active");
+  assert.equal(order(state, "A").deliveryStatus, "Đang giao hàng");
+  assert.equal(order(state, "A").sessionId, session(state).id);
+  assert.equal(order(state, "C").deliveryStatus, "Đang giao hàng");
   assert.throws(() => startSession(state, 3000), /Phiên này đã bắt đầu/);
   assert.throws(() => createSession(state, ["B"], { B: "Sáng" }, 3000), /Đã có một phiên/);
   state = addOrdersToSession(state, ["B"], "Sáng");
@@ -383,6 +399,9 @@ test("reopening a standalone delivered order creates a one-stop session", () => 
   state = reopenDeliveredOrder(state, "A", "Đang giao hàng", "Tối", 4000);
   assert.equal(session(state).status, "notStarted");
   assert.equal(session(state).shifts.A, "Tối");
+  assert.equal(order(state, "A").sessionId, null);
+  assert.equal(order(state, "A").deliveryStatus, "Chưa giao hàng");
+  state = startSession(state, 5000);
   assert.equal(order(state, "A").sessionId, session(state).id);
   assert.equal(order(state, "A").deliveryStatus, "Đang giao hàng");
 });
