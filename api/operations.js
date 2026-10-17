@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { handler, readJson, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { withTransaction } from "../server-lib/db.mjs";
-import { sheetShipperNames } from "../server-lib/accounts.mjs";
+import { sheetOrderBelongsToShipper } from "../server-lib/accounts.mjs";
 import { DELIVERY_STATUSES, PAYMENT_STATUSES, PAYMENT_METHODS, validateOrderMutation } from "../server-lib/orders.mjs";
 import { queueUpstream, flushUpstream } from "../server-lib/upstream.mjs";
 
@@ -99,22 +99,16 @@ async function applySession(client, operation, user) {
   const currentRevision = Number(current?.revision || 0);
   if (Number(operation.baseRevision || 0) !== currentRevision) return { conflict: true, id, sessionId, revision: currentRevision };
   if (payload.orderIds.length) {
-    const shipperNames = sheetShipperNames(user).map(name => name.trim().toLocaleLowerCase("vi-VN"));
-    const assigned = await client.query(`SELECT code FROM mealfit_orders
-      WHERE code = ANY($1::text[]) AND (assigned_user_id = $2 OR (
-        lower(btrim(shipper_name)) = ANY($3::text[])
-        AND (assigned_user_id IS NULL OR assigned_user_id = 'external' OR NOT EXISTS (
-          SELECT 1 FROM mealfit_accounts account WHERE account.id = mealfit_orders.assigned_user_id
-        ))))`, [payload.orderIds, ownerId, shipperNames]);
-    if (assigned.rows.length !== payload.orderIds.length) {
-      return { id, sessionId, conflict: true, errorCode: "SESSION_ORDER_FORBIDDEN", revision: currentRevision };
+    const assigned = await client.query(`SELECT code, assigned_user_id, shipper_name FROM mealfit_orders WHERE code = ANY($1::text[])`, [payload.orderIds]);
+    const ordersByCode = new Map(assigned.rows.map(order => [order.code, order]));
+    const unassignedCodes = payload.orderIds.filter(code => !sheetOrderBelongsToShipper(ordersByCode.get(code), user));
+    if (unassignedCodes.length) {
+      return { id, sessionId, conflict: true, errorCode: "SESSION_ORDER_FORBIDDEN", unassignedCodes, revision: currentRevision };
     }
-    const repaired = await client.query(`UPDATE mealfit_orders SET assigned_user_id = $2
-      WHERE code = ANY($1::text[]) AND assigned_user_id IS DISTINCT FROM $2
-        AND lower(btrim(shipper_name)) = ANY($3::text[])
-        AND (assigned_user_id IS NULL OR assigned_user_id = 'external' OR NOT EXISTS (
-          SELECT 1 FROM mealfit_accounts account WHERE account.id = mealfit_orders.assigned_user_id
-        )) RETURNING code`, [payload.orderIds, ownerId, shipperNames]);
+    const repairCodes = assigned.rows.filter(order => order.assigned_user_id !== ownerId).map(order => order.code);
+    const repaired = repairCodes.length
+      ? await client.query(`UPDATE mealfit_orders SET assigned_user_id = $2 WHERE code = ANY($1::text[]) RETURNING code`, [repairCodes, ownerId])
+      : { rows: [] };
     if (repaired.rows.length) await client.query(`INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, detail)
       SELECT $1, 'order', code, 'assignment-repair', '{"source":"session-sync"}'::jsonb
       FROM unnest($2::text[]) AS code`, [user.id, repaired.rows.map(row => row.code)]);
@@ -161,7 +155,7 @@ export default handler(async (req, res) => {
       error: {
         code: conflict.errorCode || "REVISION_CONFLICT",
         message: sessionConflict
-          ? "Phiên cũ có đơn không còn được giao cho tài khoản này. Danh sách đơn đã được làm mới; phiên được giữ trong lịch sử trên thiết bị."
+          ? `Các đơn ${conflict.unassignedCodes?.join(", ") || "trong phiên"} chưa được gán cho tài khoản này. Phiên được giữ trong lịch sử trên thiết bị.`
           : "Đơn hoặc phiên đã được cập nhật ở nơi khác. Làm mới dữ liệu để xử lý xung đột."
       },
       conflict, results

@@ -19,6 +19,11 @@ export function sheetShipperNames(user) {
   return names;
 }
 
+export function sheetOrderBelongsToShipper(order, user) {
+  return user?.role === "shipper" && (order?.assigned_user_id === user.id
+    || sheetShipperNames(user).some(name => nameKey(name) === nameKey(order?.shipper_name)));
+}
+
 export async function getAccount(id) {
   const rows = await getSql()`SELECT id, name, role, aliases FROM mealfit_accounts WHERE id = ${id} LIMIT 1`;
   return rows[0] ? accountFromRow(rows[0]) : null;

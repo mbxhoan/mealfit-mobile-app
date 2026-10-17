@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sheetShipperNames, validateAccountDirectory } from "./accounts.mjs";
+import { sheetOrderBelongsToShipper, sheetShipperNames, validateAccountDirectory } from "./accounts.mjs";
 
 const initial = [
   { id: "admin", name: "Admin", role: "admin", aliases: [] },
@@ -13,6 +13,13 @@ test("order sync always filters a shipper by current and legacy names", () => {
   assert.deepEqual(sheetShipperNames({ role: "shipper", name: "Hiếu" }), ["Hiếu"]);
   assert.deepEqual(sheetShipperNames({ role: "admin", name: "Admin" }), [""]);
   assert.throws(() => sheetShipperNames({ role: "shipper", name: " " }), error => error.code === "SHIPPER_NAME_MISSING");
+});
+
+test("a shipper's Sheet name or alias repairs a stale Neon assignment", () => {
+  const user = { id: "shipper-new", role: "shipper", name: "Anh Hiếu", shipperNames: ["Hiếu"] };
+  assert.equal(sheetOrderBelongsToShipper({ assigned_user_id: "shipper-old", shipper_name: "Hiếu" }, user), true);
+  assert.equal(sheetOrderBelongsToShipper({ assigned_user_id: "shipper-new", shipper_name: "Tên khác" }, user), true);
+  assert.equal(sheetOrderBelongsToShipper({ assigned_user_id: "shipper-other", shipper_name: "Hoàn" }, user), false);
 });
 
 test("renaming a shipper preserves the old Sheet name as an alias and keeps the account id", () => {
