@@ -38,6 +38,43 @@ test("n8n authorization failures identify the webhook HTTP status", async t => {
   });
 });
 
+test("n8n acknowledgement is accepted only after the Sheet confirms paid and due amounts", async t => {
+  const original = {
+    fetch: globalThis.fetch,
+    sheetId: process.env.N8N_SHEET_ID,
+    base: process.env.N8N_BASE_URL,
+    key: process.env.N8N_API_KEY,
+    vercel: process.env.VERCEL,
+    vercelEnv: process.env.VERCEL_ENV
+  };
+  t.after(() => {
+    globalThis.fetch = original.fetch;
+    for (const [key, value] of [["N8N_SHEET_ID", original.sheetId], ["N8N_BASE_URL", original.base], ["N8N_API_KEY", original.key], ["VERCEL", original.vercel], ["VERCEL_ENV", original.vercelEnv]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  process.env.N8N_BASE_URL = "https://example.test/webhook";
+  process.env.N8N_API_KEY = "test-only-secret";
+  process.env.N8N_SHEET_ID = "sheet-test";
+  delete process.env.VERCEL;
+  delete process.env.VERCEL_ENV;
+  const row = {
+    "Mã đơn": "DH0928", Shipper: "Hiếu", "Đã thanh toán": "537000", "TỔNG THANH TOÁN": "24000",
+    "Trạng thái đơn": "Chưa thanh toán", "Trạng thái giao hàng": "Đã giao hàng", "Ghi chú bởi shipper": "", revision: 5
+  };
+  globalThis.fetch = async url => String(url).includes("shipping-order?")
+    ? Response.json({ data: row })
+    : Response.json({ status: "ok", revision: 5 });
+  const body = {
+    sheet_id: "sheet-test", code: "DH0928", shipper: "Hiếu", total: "537000", remaining_due: "24000",
+    payment_staus: "Chưa thanh toán", shipping_status: "Đã giao hàng", note: "", expected_revision: 4
+  };
+
+  assert.deepEqual(await pushSheetOrder(body, "operation-1"), { status: "ok", revision: 5 });
+  row["TỔNG THANH TOÁN"] = "23000";
+  await assert.rejects(pushSheetOrder(body, "operation-2"), error => error.code === "UPSTREAM_INVALID_RESPONSE");
+});
+
 test("all webhook calls share a serialized queue with a minimum start interval", async t => {
   const original = {
     fetch: globalThis.fetch,

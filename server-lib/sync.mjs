@@ -12,9 +12,11 @@ const sheetAmount = value => Number(String(value ?? "").replace(/[^\d-]/g, ""));
 export function sheetOrderMatchesPayload(row, body) {
   if (!row || !body) return false;
   const code = String(row["Mã đơn"] || row.code || "").trim();
+  const sheetDue = row["TỔNG THANH TOÁN"] ?? row.remaining_due;
   return code === String(body.code || "").trim()
     && String(row.Shipper ?? row.shipper ?? "").trim() === String(body.shipper ?? "").trim()
     && sheetAmount(row["Đã thanh toán"] ?? row.total) === sheetAmount(body.total)
+    && (body.remaining_due == null || sheetDue != null && String(sheetDue).trim() !== "" && sheetAmount(sheetDue) === sheetAmount(body.remaining_due))
     && String(row["Trạng thái đơn"] ?? row.payment_status ?? "") === String(body.payment_staus ?? "")
     && String(row["Trạng thái giao hàng"] ?? row.shipping_status ?? "") === String(body.shipping_status ?? "")
     && String(row["Ghi chú bởi shipper"] ?? row.note ?? "") === String(body.note ?? "");

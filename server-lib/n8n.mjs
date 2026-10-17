@@ -1,6 +1,6 @@
 import { AppError, recordApiCall, requireEnv } from "./core.mjs";
 import { withAdvisoryLock } from "./db.mjs";
-import { sheetOrderMatchesPayload } from "./sync.mjs";
+import { sheetOrderMatchesPayload, sheetUpdateMatches } from "./sync.mjs";
 
 const N8N_QUEUE_LOCK = 772_024_102;
 const N8N_REQUEST_INTERVAL_MS = 1_100;
@@ -214,7 +214,12 @@ export async function pushSheetOrder(body, idempotencyKey) {
     body: JSON.stringify({ ...body, operation_id: idempotencyKey })
   });
   if (result.status === "conflict") throw new AppError(409, "SHEET_REVISION_CONFLICT", "Dữ liệu Google Sheet đã thay đổi. Admin cần kiểm tra xung đột trước khi đồng bộ tiếp.");
-  if (result.status === "ok" && Number.isSafeInteger(Number(result.revision))) return result;
+  if (result.status === "ok" && Number.isSafeInteger(Number(result.revision))) {
+    const row = await fetchSheetOrder(body.code);
+    const revision = Number(row?.revision ?? row?.Revision);
+    if (!sheetUpdateMatches(row, body) || revision < Number(result.revision)) throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Google Sheet chưa xác nhận đủ số tiền và trạng thái cập nhật.");
+    return { status: "ok", revision };
+  }
   let row = result;
   if (typeof row === "string") {
     try { row = JSON.parse(row); } catch {}

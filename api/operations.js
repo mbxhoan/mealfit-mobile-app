@@ -36,13 +36,15 @@ async function applyOrder(client, operation, user) {
   const shipperName = user.role === "shipper" ? user.name : String(payload.shipperName || current.shipper_name || "Chưa phân công");
   if (!shipperName.trim()) throw new AppError(400, "MISSING_SHIPPER", "Thiếu thông tin shipper.");
   const assignedUserId = user.role === "shipper" ? user.id : (payload.assignedUserId ?? current.assigned_user_id);
-  const remainingDue = payload.paymentStatus === "Đã thanh toán" ? 0 : Math.max(0, Math.round(Number(payload.remainingDue ?? (Number(payload.total) - Number(payload.paidAmount)))));
+  const total = Math.round(Number(payload.total ?? current.total) || 0);
+  const paidAmount = Math.round(Number(payload.paidAmount));
+  const remainingDue = payload.paymentStatus === "Đã thanh toán" ? 0 : Math.max(0, Math.round(Number(payload.remainingDue ?? current.remaining_due ?? (total - paidAmount))));
   const raw = {
     ...(current.row_data || {}),
     "Mã đơn": code,
     "Trạng thái giao hàng": payload.deliveryStatus,
     "Trạng thái đơn": payload.paymentStatus,
-    "Đã thanh toán": Math.round(Number(payload.paidAmount)),
+    "Đã thanh toán": paidAmount,
     "TỔNG THANH TOÁN": remainingDue,
     "Ghi chú bởi shipper": payload.note,
     Shipper: shipperName,
@@ -54,7 +56,7 @@ async function applyOrder(client, operation, user) {
       note = $9, maps_url = $10, session_id = $11, payments = $12::jsonb,
       revision = revision + 1, updated_at = now()
     WHERE code = $13 AND revision = $14 RETURNING revision`,
-    [JSON.stringify(raw), Math.max(0, Math.round(Number(payload.total))), Math.round(Number(payload.paidAmount)), remainingDue,
+    [JSON.stringify(raw), total, paidAmount, remainingDue,
       payload.paymentStatus, payload.deliveryStatus, shipperName, assignedUserId, payload.note, payload.mapsLink || "",
       payload.sessionId || null, JSON.stringify(payload.payments || []), code, Number(operation.baseRevision)]);
   if (!updated.rows[0]) throw new AppError(409, "REVISION_CONFLICT", "Đơn vừa được cập nhật ở thiết bị khác. Làm mới dữ liệu để xử lý xung đột.");
@@ -67,7 +69,7 @@ async function applyOrder(client, operation, user) {
       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (payment_id) DO NOTHING`,
       [`${id}:${index}`, code, payment.sessionId || null, user.id, payment.method, Math.round(Number(payment.amount)), new Date(payment.paidAt || Date.now()).toISOString()]);
   }
-  await queueUpstream(client, id, { ...payload, id: code, shipperName, paidAmount: Math.round(Number(payload.paidAmount)), paymentStatus: payload.paymentStatus, deliveryStatus: payload.deliveryStatus, note: payload.note }, revision);
+  await queueUpstream(client, id, { ...payload, id: code, shipperName, total, paidAmount, remainingDue, paymentStatus: payload.paymentStatus, deliveryStatus: payload.deliveryStatus, note: payload.note }, revision);
   await client.query("INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, operation_id, detail) VALUES ($1, 'order', $2, 'update', $3, $4::jsonb)", [user.id, code, id, JSON.stringify({ revision })]);
   const result = { id, code, revision };
   await client.query("INSERT INTO mealfit_operations (operation_id, actor_id, entity_type, entity_id, body_hash, result) VALUES ($1, $2, 'order', $3, $4, $5::jsonb)", [id, user.id, code, bodyHash, JSON.stringify(result)]);
@@ -164,6 +166,7 @@ export default handler(async (req, res) => {
     .map(operation => operation.entityId || operation.payload?.id)
     .filter(Boolean).map(String))];
   if (orderCodes.length) {
+    await flushUpstream(50, orderCodes);
     const pending = await pendingUpstream(orderCodes);
     const conflicts = new Set(pending.filter(item => item.status === "conflict").map(item => item.order_code));
     if (conflicts.size) {
@@ -173,7 +176,12 @@ export default handler(async (req, res) => {
       });
       return;
     }
-    waitUntil(flushUpstream(50, orderCodes).catch(error => console.error(JSON.stringify({ code: "OUTBOX_RETRY", message: error.message }))));
+    if (pending.length) {
+      const retryAt = Math.min(...pending.map(item => new Date(item.next_attempt_at).getTime()).filter(Number.isFinite));
+      const error = new AppError(503, "SHEET_SYNC_PENDING", "Google Sheet chưa xác nhận đủ số tiền và trạng thái. Thay đổi đã được lưu và sẽ tự đồng bộ lại.");
+      error.retryAfterSeconds = Number.isFinite(retryAt) ? Math.max(3, Math.min(30, Math.ceil((retryAt - Date.now()) / 1000))) : 5;
+      throw error;
+    }
   }
   const conflict = results.find(result => result.conflict && result.errorCode !== "SESSION_ORDER_FORBIDDEN")
     || results.find(result => result.conflict);
@@ -194,5 +202,5 @@ export default handler(async (req, res) => {
     });
     return;
   }
-  send(res, 200, { results, upstreamPending: orderCodes.length ? (await pendingUpstream(orderCodes)).length : 0 });
+  send(res, 200, { results, upstreamPending: 0 });
 });

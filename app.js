@@ -877,9 +877,15 @@ function scheduleQueuedSync(delay = 120) {
       const result = await syncQueued();
       syncRetryDelay = 1_500;
       if (result.webhookPending) flash(`Đã lưu thay đổi · webhook n8n đang cập nhật ${result.webhookPending} đơn.`);
+      else if (result.confirmedOrders) flash(`Google Sheet đã xác nhận ${result.confirmedOrders} đơn.`);
     } catch (error) {
       if (error.status === 401) { void logout(); return; }
       if (error.code === "SESSION_ORDERS_PENDING") { scheduleQueuedSync(error.retryAfterMs || 5_000); return; }
+      if (error.code === "SHEET_SYNC_PENDING") {
+        if (!syncErrorShown) { syncErrorShown = true; showError(error); }
+        scheduleQueuedSync(error.retryAfterMs || 5_000);
+        return;
+      }
       if ([400, 403, 404, 409].includes(error.status)) {
         if (!syncErrorShown) { syncErrorShown = true; showError(error); }
         return;
@@ -900,6 +906,7 @@ async function syncQueued() {
   let hasOperations = false;
   let syncFailure = null;
   let webhookPending = 0;
+  let confirmedOrders = 0;
   const sessionConflicts = new Set();
   try {
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -930,7 +937,10 @@ async function syncQueued() {
         const byId = new Map((result.results || []).map(item => [item.id, item]));
         for (const item of batch) {
           const acknowledgement = byId.get(item.id);
-          if (acknowledgement) await ackOutbox(item.id, acknowledgement.revision);
+          if (acknowledgement) {
+            await ackOutbox(item.id, acknowledgement.revision);
+            if (item.type === "order") confirmedOrders++;
+          }
           else await failOutbox(item.id);
         }
       } catch (error) {
@@ -974,7 +984,7 @@ async function syncQueued() {
   const pending = (await getOutbox(user.id)).filter(item => !["done", "conflict"].includes(item.status));
   if (syncFailure) throw syncFailure;
   if (pending.length) throw new Error(`Còn ${pending.length} thay đổi chưa gửi được. Thử đồng bộ lại trước khi tải danh sách đơn.`);
-  return { sessionConflicts: [...sessionConflicts], webhookPending };
+  return { sessionConflicts: [...sessionConflicts], webhookPending, confirmedOrders };
 }
 
 async function syncQueuedAppLog() {

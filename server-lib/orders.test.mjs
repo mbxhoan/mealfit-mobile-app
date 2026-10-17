@@ -39,6 +39,7 @@ test("n8n updates send the full validated body and cumulative paid amount", () =
   }, "sheet-test");
   assert.deepEqual(body, {
     sheet_id: "sheet-test", code: "DH0899", shipper: "Hiếu", total: "70000",
+    remaining_due: "180000",
     payment_staus: "Chưa thanh toán", shipping_status: "Đã giao hàng", note: "", expected_revision: 4
   });
   assert.throws(() => toN8nBody({
@@ -54,9 +55,13 @@ test("n8n updates allow missing customer contact details while preserving requir
   }, "sheet-test");
   assert.equal(body.shipper, "Chưa phân công");
   assert.equal(body.total, "0");
+  assert.equal(body.remaining_due, "0");
   assert.throws(() => toN8nBody({
     id: "DH0899", phone: 123, paidAmount: 0, paymentStatus: "Chưa thanh toán", deliveryStatus: "Đang giao hàng", note: ""
   }, "sheet-test"), /phone không hợp lệ/);
+  assert.throws(() => toN8nBody({
+    id: "DH0899", paidAmount: 0, remainingDue: -1, paymentStatus: "Chưa thanh toán", deliveryStatus: "Đang giao hàng", note: ""
+  }, "sheet-test"), /số tiền cần thu/);
 });
 
 test("claim retry succeeds only for the same shipper while the order is still pending", () => {

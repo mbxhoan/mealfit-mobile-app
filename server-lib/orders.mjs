@@ -78,7 +78,11 @@ export function validateOrderMutation(order) {
   if (!order || typeof order !== "object" || !/^[A-Za-z0-9_-]{2,40}$/.test(String(order.id || ""))) throw new AppError(400, "INVALID_ORDER", "Mã đơn hàng không hợp lệ.");
   if (!DELIVERY_STATUSES.includes(order.deliveryStatus)) throw new AppError(400, "INVALID_SHIPPING_STATUS", "Trạng thái giao hàng không hợp lệ.");
   if (!PAYMENT_STATUSES.includes(order.paymentStatus)) throw new AppError(400, "INVALID_PAYMENT_STATUS", "Trạng thái thanh toán không hợp lệ.");
-  if (!Number.isFinite(Number(order.paidAmount)) || Number(order.paidAmount) < 0) throw new AppError(400, "INVALID_TOTAL", "Tổng tiền đã thanh toán phải từ 0đ trở lên.");
+  const validAmount = value => Number.isSafeInteger(Number(value)) && Number(value) >= 0;
+  if (!validAmount(order.paidAmount)) throw new AppError(400, "INVALID_TOTAL", "Tổng tiền đã thanh toán phải là số nguyên không âm.");
+  for (const field of ["total", "remainingDue"]) {
+    if (order[field] != null && !validAmount(order[field])) throw new AppError(400, "INVALID_TOTAL", "Số tiền đơn hàng và số tiền cần thu phải là số nguyên không âm.");
+  }
   for (const field of ["customer", "phone", "address", "shipperName"]) {
     if (order[field] != null && typeof order[field] !== "string") throw new AppError(400, "INVALID_FIELD", `Thông tin ${field} không hợp lệ.`);
   }
@@ -90,11 +94,17 @@ export function validateOrderMutation(order) {
 
 export function toN8nBody(order, sheetId) {
   validateOrderMutation(order);
+  const total = Math.round(Number(order.total) || 0);
+  const paidAmount = Math.round(Number(order.paidAmount));
+  const remainingDue = order.paymentStatus === "Đã thanh toán"
+    ? 0
+    : Math.round(Number(order.remainingDue ?? Math.max(0, total - paidAmount)));
   return {
     sheet_id: sheetId,
     code: order.id,
     shipper: String(order.shipperName || "Chưa phân công"),
-    total: String(Math.round(Number(order.paidAmount))),
+    total: String(paidAmount),
+    remaining_due: String(remainingDue),
     payment_staus: order.paymentStatus,
     shipping_status: order.deliveryStatus,
     note: order.note,
