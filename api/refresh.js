@@ -77,17 +77,24 @@ export default handler(async (req, res) => {
       const shipperNames = user.role === "shipper" ? sheetShipperNames(user).filter(Boolean) : [""];
       if (user.role === "shipper" && !shipperNames.length) throw new AppError(400, "SHIPPER_NAME_REQUIRED", "Tài khoản shipper chưa có tên để lọc đơn hàng.");
       stage = "n8n-fetch";
-      // Fetch each current or legacy shipper name so the webhook filters rows before pagination.
+      // Fetch current and legacy shipper names; verify missing delivered statuses against the unfiltered Sheet view.
       const verificationCutoff = new Date().toISOString();
       const pull = await fetchSheetOrdersForShippers({ shippers: shipperNames, limit: 500 });
       const allowedShippers = user.role === "shipper"
         ? new Set(shipperNames.map(name => sheetText(name).toLocaleLowerCase("vi-VN")))
         : null;
-      const rows = allowedShippers
+      let rows = allowedShippers
         ? pull.rows.filter(row => allowedShippers.has(sheetText(row?.Shipper ?? row?.shipper).toLocaleLowerCase("vi-VN")))
         : pull.rows;
-      received = rows.length;
       pages = pull.pages;
+      const hasDeliveredOrder = values => values.some(row => sheetText(row?.["Trạng thái giao hàng"] ?? row?.shipping_status) === "Đã giao hàng");
+      if (allowedShippers && !hasDeliveredOrder(rows)) {
+        const completePull = await fetchSheetOrdersForShippers({ shippers: [""], limit: 500 });
+        const completeRows = completePull.rows.filter(row => allowedShippers.has(sheetText(row?.Shipper ?? row?.shipper).toLocaleLowerCase("vi-VN")));
+        if (hasDeliveredOrder(completeRows)) rows = completeRows;
+        pages += completePull.pages;
+      }
+      received = rows.length;
       await reconcileUpstreamWithSheet(rows);
       const reconciledPending = await sql`SELECT outbox.status, count(*)::int AS count
           FROM mealfit_upstream_outbox AS outbox

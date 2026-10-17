@@ -93,6 +93,7 @@ export async function importSheetOrders(rows, { allowOutboxConflicts = false, al
         'sourceRevision', current.source_revision), incoming.raw
     FROM incoming JOIN mealfit_orders current USING (code)
     WHERE incoming.source_revision > current.source_revision
+      AND NOT ${sheetAuthoritative}
       AND (incoming.customer IS DISTINCT FROM current.customer OR incoming.phone IS DISTINCT FROM current.phone
         OR incoming.address IS DISTINCT FROM current.address OR incoming.total IS DISTINCT FROM current.total
         OR incoming.paid_amount IS DISTINCT FROM current.paid_amount OR incoming.payment_status IS DISTINCT FROM current.payment_status
@@ -132,13 +133,15 @@ export async function importSheetOrders(rows, { allowOutboxConflicts = false, al
       assigned_user_id = EXCLUDED.assigned_user_id,
       note = EXCLUDED.note,
       items = COALESCE(EXCLUDED.items, mealfit_orders.items),
-      source_revision = GREATEST(mealfit_orders.source_revision, EXCLUDED.source_revision),
+      source_revision = CASE WHEN ${sheetAuthoritative} THEN EXCLUDED.source_revision
+        ELSE GREATEST(mealfit_orders.source_revision, EXCLUDED.source_revision) END,
       revision = mealfit_orders.revision + 1,
       synced_at = now(),
       updated_at = now()
-    -- Live Sheet rows bypass local queues, while revisions prevent an older page rolling back a newer row.
+    -- Sheet-authoritative pulls bypass local queues and Neon revisions; other imports reject stale Sheet pages.
     WHERE (EXCLUDED.source_revision > mealfit_orders.source_revision
       OR ((EXCLUDED.source_revision = mealfit_orders.source_revision
+        OR ${sheetAuthoritative}
         OR NOT (EXCLUDED.row_data ? 'revision' OR EXCLUDED.row_data ? 'Revision')) AND (
         EXCLUDED.customer IS DISTINCT FROM mealfit_orders.customer
         OR EXCLUDED.phone IS DISTINCT FROM mealfit_orders.phone
@@ -154,6 +157,7 @@ export async function importSheetOrders(rows, { allowOutboxConflicts = false, al
         OR EXCLUDED.shipper_name IS DISTINCT FROM mealfit_orders.shipper_name
         OR EXCLUDED.assigned_user_id IS DISTINCT FROM mealfit_orders.assigned_user_id
         OR EXCLUDED.note IS DISTINCT FROM mealfit_orders.note
+        OR (${sheetAuthoritative} AND EXCLUDED.row_data IS DISTINCT FROM mealfit_orders.row_data)
         OR EXCLUDED.row_data->>'Ghi chú' IS DISTINCT FROM mealfit_orders.row_data->>'Ghi chú'
         OR (EXCLUDED.items IS NOT NULL AND mealfit_orders.items IS DISTINCT FROM EXCLUDED.items)
       )))
