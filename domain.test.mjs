@@ -11,6 +11,7 @@ import {
   getSessionStats,
   isAssignedPendingOrder,
   isEdgeBackSwipe,
+  isOrphanInTransitOrder,
   missingCriticalOrderFields,
   markDelivered,
   markPaid,
@@ -21,6 +22,7 @@ import {
   reorderOrderInSession,
   removeOrderFromSession,
   reopenDeliveredOrder,
+  resolveOrphanDelivery,
   resumeSession,
   setOrderMapsLink,
   setOrderNote,
@@ -131,6 +133,32 @@ test("payment sync records the collected remainder instead of the order value", 
 
   assert.equal(order(next, unpaid.id).paidAmount, 563_050);
   assert.equal(order(next, unpaid.id).payments[0].amount, 563_050);
+});
+
+test("a stale delivery from a completed session can be resolved without changing its payment record", () => {
+  const initial = seed();
+  const unpaid = initial.orders[0];
+  unpaid.paymentStatus = "Chưa thanh toán";
+  unpaid.assignedUserId = "hieu";
+  let state = startSession(createSession(initial, [unpaid.id], { [unpaid.id]: "Sáng" }, 1000), 2000);
+  state = markPaid(state, unpaid.id, "Tiền mặt", 3000);
+  assert.equal(isOrphanInTransitOrder(state, order(state, unpaid.id), "hieu"), false);
+
+  const completed = {
+    ...state,
+    activeSessionId: null,
+    sessions: state.sessions.map(item => ({ ...item, status: "completed", completedAt: 4000 }))
+  };
+  assert.equal(isOrphanInTransitOrder(completed, order(completed, unpaid.id), "hieu"), true);
+
+  const resolved = resolveOrphanDelivery(completed, unpaid.id, "hieu", "Đã giao hàng", 5000);
+  assert.equal(order(resolved, unpaid.id).deliveryStatus, "Đã giao hàng");
+  assert.deepEqual(order(resolved, unpaid.id).payments, order(completed, unpaid.id).payments);
+  assert.equal(session(resolved).legs[unpaid.id].completedAt, 5000);
+  assert.deepEqual(
+    [getSessionStats(resolved, session(resolved).id).cashCollected, getSessionStats(resolved, session(resolved).id).transferCollected, getSessionStats(resolved, session(resolved).id).remainingCount],
+    [100_000, 0, 0]
+  );
 });
 
 test("an active route can collect and deliver a later stop in another shift", () => {

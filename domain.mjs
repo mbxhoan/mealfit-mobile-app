@@ -42,7 +42,7 @@ export const isAssignedPendingOrder = (order, userId) => Boolean(
 
 export function isOrphanInTransitOrder(state, order, userId) {
   return Boolean(userId && order?.assignedUserId === userId && order.deliveryStatus === "Đang giao hàng"
-    && !(state.sessions || []).some(session => session.orderIds?.includes(order.id)));
+    && !(state.sessions || []).some(session => OPEN_SESSION_STATUSES.includes(session.status) && session.orderIds?.includes(order.id)));
 }
 
 export function resolveOrphanDelivery(state, orderId, userId, deliveryStatus, changedAt = Date.now()) {
@@ -53,7 +53,8 @@ export function resolveOrphanDelivery(state, orderId, userId, deliveryStatus, ch
   if (!isOrphanInTransitOrder(state, order, userId)) {
     throw new Error("Đơn không còn là đơn đang giao ngoài phiên của shipper này.");
   }
-  return updateOrder(state, orderId, current => ({
+  const closedSession = state.sessions.find(session => session.id === order.sessionId && session.status === "completed" && session.orderIds.includes(orderId));
+  const next = updateOrder(state, orderId, current => ({
     ...current,
     deliveryStatus,
     sessionId: null,
@@ -61,6 +62,20 @@ export function resolveOrphanDelivery(state, orderId, userId, deliveryStatus, ch
       ? { deliveredAt: changedAt }
       : { deliveryMethod: null, deliveredAt: null })
   }));
+  if (deliveryStatus !== "Đã giao hàng" || !closedSession) return next;
+  const previousLeg = closedSession.legs?.[orderId] || {};
+  const startedAt = previousLeg.startedAt ?? closedSession.stopStarts?.[orderId] ?? closedSession.startedAt ?? changedAt;
+  return {
+    ...next,
+    sessions: next.sessions.map(session => session.id === closedSession.id ? {
+      ...session,
+      legs: {
+        ...session.legs,
+        [orderId]: { ...previousLeg, startedAt, completedAt: changedAt, durationMs: activeDuration(startedAt, changedAt, session.pauseIntervals) }
+      },
+      stopStarts: Object.fromEntries(Object.entries(session.stopStarts || {}).filter(([id]) => id !== orderId))
+    } : session)
+  };
 }
 
 export function missingCriticalOrderFields(order) {
