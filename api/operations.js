@@ -127,7 +127,7 @@ async function applySession(client, operation, user) {
         error.retryAfterSeconds = retryAfterSeconds;
         throw error;
       }
-      const notInTransit = payload.orderIds.filter(code => ordersByCode.get(code)?.shipping_status !== "Đang giao hàng");
+      const notInTransit = payload.orderIds.filter(code => !["Đang giao hàng", "Đã giao hàng"].includes(ordersByCode.get(code)?.shipping_status));
       if (notInTransit.length) return { id, sessionId, conflict: true, errorCode: "SESSION_ORDER_STATUS_MISMATCH", orderCodes: notInTransit, revision: currentRevision };
     }
   }
@@ -182,6 +182,15 @@ export default handler(async (req, res) => {
       error.retryAfterSeconds = Number.isFinite(retryAt) ? Math.max(3, Math.min(30, Math.ceil((retryAt - Date.now()) / 1000))) : 5;
       throw error;
     }
+  }
+  const orderPayloads = new Map(operations
+    .filter(operation => operation.type === "order")
+    .map(operation => [String(operation.entityId || operation.payload?.id || ""), operation.payload]));
+  for (const [index, result] of results.entries()) {
+    if (!result.conflict || result.errorCode !== "SESSION_ORDER_STATUS_MISMATCH") continue;
+    const operation = operations.find(item => item.type === "session" && item.operationId === result.id);
+    if (!operation || !result.orderCodes?.length || result.orderCodes.some(code => !["Đang giao hàng", "Đã giao hàng"].includes(orderPayloads.get(String(code))?.deliveryStatus))) continue;
+    results[index] = await withTransaction(client => applySession(client, operation, user));
   }
   const conflict = results.find(result => result.conflict && result.errorCode !== "SESSION_ORDER_FORBIDDEN")
     || results.find(result => result.conflict);

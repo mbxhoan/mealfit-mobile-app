@@ -932,7 +932,7 @@ async function syncQueued() {
             }
           }
         }
-        const result = await apiRequest("/api/operations", { method: "POST", body: { operations }, timeout: 120_000 });
+        const result = await apiRequest("/api/operations", { method: "POST", body: { operations }, timeout: 270_000 });
         webhookPending += Number(result.upstreamPending) || 0;
         const byId = new Map((result.results || []).map(item => [item.id, item]));
         for (const item of batch) {

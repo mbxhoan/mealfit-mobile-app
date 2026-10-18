@@ -3,7 +3,7 @@ import { withAdvisoryLock } from "./db.mjs";
 import { sheetOrderMatchesPayload, sheetUpdateMatches } from "./sync.mjs";
 
 const N8N_QUEUE_LOCK = 772_024_102;
-const N8N_REQUEST_INTERVAL_MS = 1_100;
+const N8N_REQUEST_INTERVAL_MS = 2_500; // Reduce Sheet read pressure during bulk writes and verification reads.
 const N8N_QUEUE_WAIT_MS = 20_000;
 const sleep = duration => new Promise(resolve => setTimeout(resolve, duration));
 let localQueue = Promise.resolve();

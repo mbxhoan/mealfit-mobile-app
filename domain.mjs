@@ -247,11 +247,14 @@ export function startSession(state, startedAt = Date.now()) {
   if (!session || session.status !== "notStarted") throw new Error("Phiên này đã bắt đầu hoặc không còn hoạt động.");
   if (!session.orderIds.length) throw new Error("Thêm ít nhất một đơn trước khi bắt đầu.");
   if (session.orderIds.some(id => !SHIFT_OPTIONS.includes(session.shifts?.[id]))) throw new Error("Phân ca cho tất cả đơn trước khi bắt đầu.");
-  if (session.orderIds.some(id => getOrder(state, id)?.deliveryStatus !== "Chưa giao hàng")) throw new Error("Một số đơn không còn ở trạng thái chưa giao.");
+  if (session.orderIds.some(id => {
+    const order = getOrder(state, id);
+    return order?.deliveryStatus !== "Chưa giao hàng" && !(order?.sessionId === session.id && ["Đang giao hàng", "Đã giao hàng"].includes(order.deliveryStatus));
+  })) throw new Error("Một số đơn không còn ở trạng thái chưa giao.");
   return {
     ...state,
     sessions: state.sessions.map(item => item.id === session.id ? { ...item, status: "active", startedAt } : item),
-    orders: state.orders.map(order => session.orderIds.includes(order.id)
+    orders: state.orders.map(order => session.orderIds.includes(order.id) && !(order.sessionId === session.id && ["Đang giao hàng", "Đã giao hàng"].includes(order.deliveryStatus))
       ? { ...order, deliveryStatus: "Đang giao hàng", deliveryMethod: "Phiên giao hàng", sessionId: session.id }
       : order)
   };
