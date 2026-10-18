@@ -40,6 +40,9 @@ export const isAssignedPendingOrder = (order, userId) => Boolean(
   userId && order?.assignedUserId === userId && order.deliveryStatus === "Chưa giao hàng"
 );
 
+export const paymentsForSession = (order, sessionId) =>
+  (order?.payments || []).filter(payment => payment.sessionId === sessionId);
+
 export function isOrphanInTransitOrder(state, order, userId) {
   return Boolean(userId && order?.assignedUserId === userId && order.deliveryStatus === "Đang giao hàng"
     && !(state.sessions || []).some(session => OPEN_SESSION_STATUSES.includes(session.status) && session.orderIds?.includes(order.id)));
@@ -521,7 +524,7 @@ export function getSessionStats(state, sessionId) {
   const session = state.sessions.find(item => item.id === sessionId);
   if (!session) return { cashCollected: 0, transferCollected: 0, remainingCount: 0, totalValue: 0, amountToCollect: 0, shifts: [] };
   const orders = session.orderIds.map(id => getOrder(state, id)).filter(Boolean);
-  const payments = orders.flatMap(order => (order.payments || []).filter(payment => payment.sessionId === session.id));
+  const payments = state.orders.flatMap(order => paymentsForSession(order, session.id));
   const stopIsDone = id => Boolean(session.legs[id]?.completedAt);
   const shiftStats = SHIFT_OPTIONS.map(shift => {
     const orderIds = session.orderIds.filter(id => session.shifts?.[id] === shift);
@@ -533,8 +536,8 @@ export function getSessionStats(state, sessionId) {
     };
   }).filter(item => item.total);
   return {
-    cashCollected: payments.filter(payment => payment.method === "Tiền mặt").reduce((sum, payment) => sum + payment.amount, 0),
-    transferCollected: payments.filter(payment => payment.method === "Chuyển khoản").reduce((sum, payment) => sum + payment.amount, 0),
+    cashCollected: payments.filter(payment => payment.method === "Tiền mặt").reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
+    transferCollected: payments.filter(payment => payment.method === "Chuyển khoản").reduce((sum, payment) => sum + Number(payment.amount || 0), 0),
     remainingCount: session.status === "cancelled" ? 0 : orders.filter(order => !stopIsDone(order.id)).length,
     totalValue: orders.reduce((sum, order) => sum + order.total, 0),
     amountToCollect: orders.reduce((sum, order) => sum + dueAmount(order), 0),

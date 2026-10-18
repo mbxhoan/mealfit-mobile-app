@@ -18,6 +18,7 @@ import {
   moveOrderInSession,
   normalizeGoogleMapsLink,
   normalizeState,
+  paymentsForSession,
   pauseSession,
   reorderOrderInSession,
   removeOrderFromSession,
@@ -343,6 +344,20 @@ test("route stats count session cash and transfer collections, route value and c
   assert.equal(stats.totalValue, 200_000);
   assert.equal(stats.amountToCollect, 0);
   assert.deepEqual(stats.shifts.map(item => item.done), [true, true]);
+});
+
+test("session totals keep recorded collections when an order is removed and exclude pre-session payments", () => {
+  let state = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  const sessionId = session(state).id;
+  state = markPaid(state, "A", "Tiền mặt", 3000);
+  state = markPaid(state, "B", "Chuyển khoản", 4000);
+  state = removeOrderFromSession(state, "A");
+
+  const stats = getSessionStats(state, sessionId);
+  assert.equal(stats.cashCollected, 100_000);
+  assert.equal(stats.transferCollected, 80_000);
+  assert.equal(paymentsForSession(order(state, "A"), sessionId).length, 1);
+  assert.equal(paymentsForSession(order(state, "B"), sessionId).length, 1);
 });
 
 test("delivered session orders can re-enter the active route or reopen their completed route", () => {
