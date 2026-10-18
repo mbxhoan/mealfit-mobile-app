@@ -74,6 +74,7 @@ let changesPollTimer = null;
 let syncRunning = false;
 let syncKickTimer = null;
 let syncRetryDelay = 1_500;
+let sheetSyncPendingNoticeFor = null;
 let appLogRunning = false;
 let photoSyncRunning = false;
 let sheetSyncRunning = false;
@@ -876,13 +877,17 @@ function scheduleQueuedSync(delay = 120) {
     try {
       const result = await syncQueued();
       syncRetryDelay = 1_500;
+      sheetSyncPendingNoticeFor = null;
       if (result.webhookPending) flash(`Đã lưu thay đổi · webhook n8n đang cập nhật ${result.webhookPending} đơn.`);
       else if (result.confirmedOrders) flash(`Google Sheet đã xác nhận ${result.confirmedOrders} đơn.`);
     } catch (error) {
       if (error.status === 401) { void logout(); return; }
       if (error.code === "SESSION_ORDERS_PENDING") { scheduleQueuedSync(error.retryAfterMs || 5_000); return; }
       if (error.code === "SHEET_SYNC_PENDING") {
-        if (!syncErrorShown) { syncErrorShown = true; showError(error); }
+        if (sheetSyncPendingNoticeFor !== user.id) {
+          sheetSyncPendingNoticeFor = user.id;
+          flash(error.message);
+        }
         scheduleQueuedSync(error.retryAfterMs || 5_000);
         return;
       }
