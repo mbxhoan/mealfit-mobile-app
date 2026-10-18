@@ -175,6 +175,14 @@ export async function nextOutboxBatch(userId, limit = 40) {
   const values = (await requestValue(store.getAll())).filter(item => item.ownerId === userId).sort((a, b) => a.createdAt - b.createdAt);
   const now = Date.now();
   for (const item of values) if (shouldRetryInflight(item, now)) { item.status = "queued"; store.put(item); }
+  for (const item of values) {
+    if (item.status === "conflict" && item.type === "order" && item.payload?.deliveryStatus === "Đã giao hàng" && !item.deliveryConflictRetried) {
+      item.status = "queued";
+      item.deliveryConflictRetried = true;
+      item.updatedAt = now;
+      store.put(item);
+    }
+  }
   const used = new Set();
   const batch = [];
   for (const item of values) {
@@ -221,6 +229,23 @@ export async function rebaseOutbox(operationId, revision) {
   const item = await requestValue(store.get(operationId));
   if (item?.status === "inflight") { item.baseRevision = value; store.put(item); }
   await complete(tx);
+}
+
+export async function retryDeliveryConflict(operationId) {
+  const db = await openLocalDb();
+  const tx = db.transaction("outbox", "readwrite");
+  const store = tx.objectStore("outbox");
+  const item = await requestValue(store.get(operationId));
+  const retry = item?.status === "inflight" && item.type === "order"
+    && item.payload?.deliveryStatus === "Đã giao hàng" && !item.deliveryConflictRetried;
+  if (retry) {
+    item.status = "queued";
+    item.deliveryConflictRetried = true;
+    item.updatedAt = Date.now();
+    store.put(item);
+  }
+  await complete(tx);
+  return Boolean(retry);
 }
 
 export async function failOutbox(operationId, conflict = false) {

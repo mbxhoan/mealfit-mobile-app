@@ -34,7 +34,7 @@ import { apiRequest as sendApiRequest } from "./api-client.mjs";
 import {
   ackAppLog, ackOutbox, commitState, deletePhoto as deleteLocalPhoto, enqueueAppLog, failAppLog, failOutbox, getMeta, getOutbox,
   getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
-  nextAppLog,
+  nextAppLog, retryDeliveryConflict,
   nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, rebaseOutbox, setMeta, writeStateSnapshot
 } from "./local-store.mjs";
 import { inject } from '@vercel/analytics';
@@ -946,15 +946,27 @@ async function syncQueued() {
       } catch (error) {
         const results = error.details?.results || [];
         const byId = new Map(results.map(item => [item.id, item]));
+        let retryingDeliveryConflict = false;
+        let unresolvedConflict = false;
         for (const item of batch) {
           const result = byId.get(item.id);
+          if (result?.conflict && error.code === "REVISION_CONFLICT" && !result.errorCode) {
+            const retried = await retryDeliveryConflict(item.id);
+            retryingDeliveryConflict = retried || retryingDeliveryConflict;
+            if (retried) continue;
+          }
           if (result?.conflict) {
+            unresolvedConflict = true;
             await failOutbox(item.id, true);
             if (result.errorCode === "SESSION_ORDER_FORBIDDEN" && result.sessionId) sessionConflicts.add(result.sessionId);
           }
           else if (result) await ackOutbox(item.id, result.revision);
-          else await failOutbox(item.id, error.status === 409);
+          else {
+            unresolvedConflict = true;
+            await failOutbox(item.id, error.status === 409);
+          }
         }
+        if (retryingDeliveryConflict) { syncFailure = unresolvedConflict ? error : null; continue; }
         const onlyStaleSessionConflicts = error.code === "SESSION_ORDER_FORBIDDEN"
           && results.some(result => result.errorCode === "SESSION_ORDER_FORBIDDEN")
           && results.every(result => !result.conflict || result.errorCode === "SESSION_ORDER_FORBIDDEN");

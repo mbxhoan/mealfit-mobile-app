@@ -13,7 +13,7 @@ async function applyOrder(client, operation, user) {
   const id = String(operation?.operationId || "");
   const code = String(operation?.entityId || operation?.payload?.id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new AppError(400, "INVALID_OPERATION", "Mã thao tác không hợp lệ.");
-  const payload = validateOrderMutation(operation.payload);
+  let payload = validateOrderMutation(operation.payload);
   const bodyHash = hash({ type: "order", code, baseRevision: operation.baseRevision, payload });
   const duplicate = await client.query("SELECT actor_id, body_hash, result FROM mealfit_operations WHERE operation_id = $1", [id]);
   if (duplicate.rows[0]) {
@@ -26,11 +26,30 @@ async function applyOrder(client, operation, user) {
   if (user.role === "shipper" && current.assigned_user_id !== user.id) {
     return { id, code, conflict: true, errorCode: "ORDER_FORBIDDEN", revision: Number(current.revision) };
   }
-  if (Number(operation.baseRevision) !== Number(current.revision)) {
-    await client.query(`INSERT INTO mealfit_conflicts (conflict_id, order_code, app_revision, sheet_revision, app_payload, sheet_payload)
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb) ON CONFLICT (conflict_id) DO NOTHING`,
-      [id, code, Number(operation.baseRevision) || 0, Number(current.source_revision) || 0, JSON.stringify(payload), JSON.stringify(current.row_data || {})]);
-    return { conflict: true, id, code, revision: Number(current.revision) };
+  let baseRevision = Number(operation.baseRevision);
+  if (baseRevision !== Number(current.revision)) {
+    const sameOrderData = Number(payload.total ?? current.total) === Number(current.total)
+      && Number(payload.paidAmount) === Number(current.paid_amount)
+      && Number(payload.remainingDue ?? current.remaining_due) === Number(current.remaining_due)
+      && payload.paymentStatus === current.payment_status
+      && payload.note === current.note
+      && String(payload.mapsLink || "") === String(current.maps_url || "")
+      && String(payload.sessionId || "") === String(current.session_id || "")
+      && JSON.stringify(payload.payments || []) === JSON.stringify(current.payments || []);
+    const canRebaseDelivery = user.role === "shipper"
+      && payload.deliveryStatus === "Đã giao hàng"
+      && ["Đang giao hàng", "Đã giao hàng"].includes(current.shipping_status)
+      && String(payload.sessionId || "") === String(current.session_id || "")
+      && sameOrderData;
+    if (!canRebaseDelivery) {
+      await client.query(`INSERT INTO mealfit_conflicts (conflict_id, order_code, app_revision, sheet_revision, app_payload, sheet_payload)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb) ON CONFLICT (conflict_id) DO NOTHING`,
+        [id, code, Number(operation.baseRevision) || 0, Number(current.source_revision) || 0, JSON.stringify(payload), JSON.stringify(current.row_data || {})]);
+      return { conflict: true, id, code, revision: Number(current.revision) };
+    }
+    // Rebase only a delivery completion whose unrelated order data still matches the locked server row.
+    baseRevision = Number(current.revision);
+    payload = { ...payload, total: Number(current.total), paidAmount: Number(current.paid_amount), remainingDue: Number(current.remaining_due), paymentStatus: current.payment_status };
   }
   if (!DELIVERY_STATUSES.includes(payload.deliveryStatus) || !PAYMENT_STATUSES.includes(payload.paymentStatus)) throw new AppError(400, "INVALID_STATUS", "Trạng thái đơn hàng không hợp lệ.");
   const shipperName = user.role === "shipper" ? user.name : String(payload.shipperName || current.shipper_name || "Chưa phân công");
@@ -58,7 +77,7 @@ async function applyOrder(client, operation, user) {
     WHERE code = $13 AND revision = $14 RETURNING revision`,
     [JSON.stringify(raw), total, paidAmount, remainingDue,
       payload.paymentStatus, payload.deliveryStatus, shipperName, assignedUserId, payload.note, payload.mapsLink || "",
-      payload.sessionId || null, JSON.stringify(payload.payments || []), code, Number(operation.baseRevision)]);
+      payload.sessionId || null, JSON.stringify(payload.payments || []), code, baseRevision]);
   if (!updated.rows[0]) throw new AppError(409, "REVISION_CONFLICT", "Đơn vừa được cập nhật ở thiết bị khác. Làm mới dữ liệu để xử lý xung đột.");
   const revision = Number(updated.rows[0].revision);
   const previousPayments = Array.isArray(current.payments) ? current.payments : [];
