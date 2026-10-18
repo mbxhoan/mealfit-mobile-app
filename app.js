@@ -1538,7 +1538,20 @@ async function deliverOrder(orderId) {
     const next = markDelivered(state, orderId);
     if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
     await updateState(next, "Đã ghi nhận giao hàng.");
+    await syncDeliveryUpdate();
   } catch (error) { flash(error.message); }
+}
+
+async function syncDeliveryUpdate() {
+  if (!navigator.onLine || syncRunning || sheetSyncRunning) return;
+  try {
+    const result = await syncQueued();
+    if (result.webhookPending) flash(`Đã lưu thay đổi · webhook n8n đang cập nhật ${result.webhookPending} đơn.`);
+    else if (result.confirmedOrders) flash(`Google Sheet đã xác nhận ${result.confirmedOrders} đơn.`);
+  } catch (error) {
+    if (error.status === 401) { void logout(); return; }
+    if (!syncErrorShown) { syncErrorShown = true; showError(error); }
+  }
 }
 
 function openPayment(orderId) {
@@ -2043,6 +2056,7 @@ app.addEventListener("click", async event => {
       if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
       modal = null;
       await updateState(next, "Đã giao hàng, khoản phải thu vẫn được ghi nhận.");
+      await syncDeliveryUpdate();
     }
     catch (error) { modal = null; render(); flash(error.message); }
     return;
