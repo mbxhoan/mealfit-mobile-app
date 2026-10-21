@@ -52,6 +52,7 @@ async function applyOrder(client, operation, user) {
     payload = { ...payload, total: Number(current.total), paidAmount: Number(current.paid_amount), remainingDue: Number(current.remaining_due), paymentStatus: current.payment_status };
   }
   if (!DELIVERY_STATUSES.includes(payload.deliveryStatus) || !PAYMENT_STATUSES.includes(payload.paymentStatus)) throw new AppError(400, "INVALID_STATUS", "Trạng thái đơn hàng không hợp lệ.");
+  validateOrderMutation(payload, current.payment_status);
   const shipperName = user.role === "shipper" ? user.name : String(payload.shipperName || current.shipper_name || "Chưa phân công");
   if (!shipperName.trim()) throw new AppError(400, "MISSING_SHIPPER", "Thiếu thông tin shipper.");
   const assignedUserId = user.role === "shipper" ? user.id : (payload.assignedUserId ?? current.assigned_user_id);

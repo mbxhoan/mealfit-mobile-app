@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canReuseClaim, normalizeSheetOrder, toN8nBody } from "./orders.mjs";
+import { canReuseClaim, normalizeSheetOrder, toN8nBody, validateOrderMutation } from "./orders.mjs";
 
 test("Sheet row normalization preserves payment and delivery status for operations", () => {
   const order = normalizeSheetOrder({
@@ -46,6 +46,20 @@ test("n8n updates send the full validated body and cumulative paid amount", () =
     id: "DH0899", customer: "Khách A", phone: "0900000000", address: "Quận 1", shipperName: "Hiếu",
     total: 250_000, paidAmount: -1, paymentStatus: "Chưa thanh toán", deliveryStatus: "Đã giao hàng", note: ""
   }, "sheet-test"), /đã thanh toán/);
+});
+
+test("n8n paid updates send only one of the supported payment methods", () => {
+  for (const method of ["Chuyển khoản", "Tiền mặt", "Khác"]) {
+    const body = toN8nBody({
+      id: "DH0899", paidAmount: 250_000, paymentStatus: "Đã thanh toán", paymentMethod: method,
+      deliveryStatus: "Đang giao hàng", note: ""
+    }, "sheet-test");
+    assert.equal(body.method, method);
+  }
+  const paidOrder = { id: "DH0899", paidAmount: 250_000, paymentStatus: "Đã thanh toán", deliveryStatus: "Đang giao hàng", note: "" };
+  assert.throws(() => validateOrderMutation(paidOrder, "Chưa thanh toán"), /Phương thức thanh toán/);
+  assert.throws(() => validateOrderMutation({ ...paidOrder, paymentMethod: "Ví điện tử" }, "Chưa thanh toán"), /Phương thức thanh toán/);
+  assert.doesNotThrow(() => validateOrderMutation({ ...paidOrder, paymentMethod: "Tiền mặt" }, "Chưa thanh toán"));
 });
 
 test("n8n updates allow missing customer contact details while preserving required API fields", () => {

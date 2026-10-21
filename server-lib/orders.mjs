@@ -74,7 +74,7 @@ export function normalizeSheetOrder(row, extra = {}) {
   };
 }
 
-export function validateOrderMutation(order) {
+export function validateOrderMutation(order, previousPaymentStatus) {
   if (!order || typeof order !== "object" || !/^[A-Za-z0-9_-]{2,40}$/.test(String(order.id || ""))) throw new AppError(400, "INVALID_ORDER", "Mã đơn hàng không hợp lệ.");
   if (!DELIVERY_STATUSES.includes(order.deliveryStatus)) throw new AppError(400, "INVALID_SHIPPING_STATUS", "Trạng thái giao hàng không hợp lệ.");
   if (!PAYMENT_STATUSES.includes(order.paymentStatus)) throw new AppError(400, "INVALID_PAYMENT_STATUS", "Trạng thái thanh toán không hợp lệ.");
@@ -89,6 +89,7 @@ export function validateOrderMutation(order) {
   if (typeof order.note !== "string") throw new AppError(400, "INVALID_NOTE", "Ghi chú phải là văn bản.");
   if (order.note.length > 2000) throw new AppError(400, "INVALID_NOTE", "Ghi chú tối đa 2.000 ký tự.");
   if (order.mapsLink && !/^https:\/\/(maps\.app\.goo\.gl|www\.google\.com|google\.com|maps\.google\.com)\//.test(order.mapsLink)) throw new AppError(400, "INVALID_MAPS_LINK", "Link Google Maps không hợp lệ.");
+  if (previousPaymentStatus != null && previousPaymentStatus !== "Đã thanh toán" && order.paymentStatus === "Đã thanh toán" && !PAYMENT_METHODS.includes(order.paymentMethod)) throw new AppError(400, "INVALID_PAYMENT_METHOD", "Phương thức thanh toán không hợp lệ.");
   return order;
 }
 
@@ -106,6 +107,7 @@ export function toN8nBody(order, sheetId) {
     total: String(paidAmount),
     remaining_due: String(remainingDue),
     payment_staus: order.paymentStatus,
+    ...(order.paymentStatus === "Đã thanh toán" && PAYMENT_METHODS.includes(order.paymentMethod) ? { method: order.paymentMethod } : {}),
     shipping_status: order.deliveryStatus,
     note: order.note,
     expected_revision: Math.max(0, Math.round(Number(order.sourceRevision) || 0))
