@@ -24,11 +24,12 @@ export function sheetOrderMatchesPayload(row, body) {
 
 export function sheetUpdateMatches(row, body) {
   const expectedRevision = Number(body?.expected_revision) + 1;
-  const sheetRevision = Number(row?.revision ?? row?.Revision);
+  const rawRevision = row?.revision ?? row?.Revision;
+  const sheetRevision = Number(rawRevision);
   return sheetOrderMatchesPayload(row, body)
     && Number.isSafeInteger(expectedRevision)
-    && Number.isSafeInteger(sheetRevision)
-    && sheetRevision >= expectedRevision;
+    && (rawRevision == null || String(rawRevision).trim() === ""
+      || Number.isSafeInteger(sheetRevision) && sheetRevision >= expectedRevision);
 }
 
 export function sheetUpdateMismatches(updates, rows) {

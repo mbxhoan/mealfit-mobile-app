@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { withAdvisoryLock, withTransaction, getSql } from "./db.mjs";
 import { AppError } from "./core.mjs";
 import { toN8nBody } from "./orders.mjs";
-import { sheetId, fetchSheetOrder, pushSheetOrder } from "./n8n.mjs";
+import { sheetId, fetchSheetOrder, pushSheetOrder, pushSheetOrders } from "./n8n.mjs";
 import { importSheetOrders, sheetUpdateMatches } from "./sync.mjs";
 
 export async function reconcileUpstreamWithSheet(rows) {
@@ -108,16 +108,26 @@ export async function flushUpstream(batchSize = 20, orderCodes = null) {
               WHERE sending.order_code = queued.order_code AND sending.status = 'sending'
             )
           ORDER BY queued.created_at LIMIT $1 FOR UPDATE SKIP LOCKED
-        `, [batchSize, codes]);
+        `, [Math.min(batchSize, 20), codes]);
         for (const row of selected.rows) {
           await client.query("UPDATE mealfit_upstream_outbox SET status = 'sending', attempts = attempts + 1, updated_at = now() WHERE operation_id = $1", [row.operation_id]);
         }
         return selected.rows;
       });
       if (!batch.length) break;
-      for (const row of batch) {
+      let results = null;
+      if (batch.length > 1) {
+        try { results = await pushSheetOrders(batch); }
+        catch (error) {
+          // The old workflow has no batch route; keep its single-order path during rollout.
+          if (error?.upstreamStatus !== 404) results = batch.map(() => ({ error }));
+        }
+      }
+      for (const [index, row] of batch.entries()) {
         try {
-          const result = await pushSheetOrder(row.request_body, row.operation_id);
+          if (results?.[index]?.error) throw results[index].error;
+          const result = results ? results[index] : await pushSheetOrder(row.request_body, row.operation_id);
+          if (result.status === "conflict" || result.status === "not-found") throw new AppError(409, "SHEET_REVISION_CONFLICT", "Google Sheet đã thay đổi hoặc không còn mã đơn này.");
           const sourceRevision = Number(result.revision ?? result.data?.revision);
           if (!Number.isSafeInteger(sourceRevision) || sourceRevision <= Number(row.request_body.expected_revision)) throw new Error("n8n did not confirm the Sheet revision");
           await getSql()`UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now() WHERE operation_id = ${row.operation_id}`;

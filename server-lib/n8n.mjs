@@ -1,4 +1,5 @@
 import { AppError, recordApiCall, requireEnv } from "./core.mjs";
+import { createHash } from "node:crypto";
 import { withAdvisoryLock } from "./db.mjs";
 import { sheetOrderMatchesPayload, sheetUpdateMatches } from "./sync.mjs";
 
@@ -77,7 +78,7 @@ export async function n8nRequest(path, options = {}) {
         response = await fetch(`${base}/${path.replace(/^\//, "")}`, {
           ...options,
           headers,
-          signal: AbortSignal.timeout(12_000)
+          signal: AbortSignal.timeout(options.timeoutMs || 12_000)
         });
       } catch (cause) {
         if (canRetry && attempt + 1 < maxAttempts) { await sleep(500 * (2 ** attempt)); continue; }
@@ -216,8 +217,8 @@ export async function pushSheetOrder(body, idempotencyKey) {
   if (result.status === "conflict") throw new AppError(409, "SHEET_REVISION_CONFLICT", "Dữ liệu Google Sheet đã thay đổi. Admin cần kiểm tra xung đột trước khi đồng bộ tiếp.");
   if (result.status === "ok" && Number.isSafeInteger(Number(result.revision))) {
     const row = await fetchSheetOrder(body.code);
-    const revision = Number(row?.revision ?? row?.Revision);
-    if (!sheetUpdateMatches(row, body) || revision < Number(result.revision)) throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Google Sheet chưa xác nhận đủ số tiền và trạng thái cập nhật.");
+    const revision = Number(result.revision);
+    if (!Number.isSafeInteger(revision) || revision <= Number(body.expected_revision) || !sheetUpdateMatches(row, body)) throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Google Sheet chưa xác nhận đủ số tiền và trạng thái cập nhật.");
     return { status: "ok", revision };
   }
   let row = result;
@@ -226,9 +227,40 @@ export async function pushSheetOrder(body, idempotencyKey) {
   }
   if (Array.isArray(row)) row = row[0];
   if (row?.data && typeof row.data === "object") row = Array.isArray(row.data) ? row.data[0] : row.data;
-  const revision = Number(row?.revision ?? row?.Revision);
-  if (!sheetOrderMatchesPayload(row, body) || !Number.isSafeInteger(revision) || revision <= Number(body.expected_revision)) {
+  const sheetRevision = row?.revision ?? row?.Revision;
+  const expectedRevision = Number(body.expected_revision);
+  const revision = sheetRevision == null || String(sheetRevision).trim() === "" ? expectedRevision + 1 : Number(sheetRevision);
+  if (!sheetOrderMatchesPayload(row, body) || !Number.isSafeInteger(expectedRevision) || !Number.isSafeInteger(revision) || revision <= expectedRevision) {
     throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Google Sheet chưa xác nhận nội dung và phiên bản cập nhật.");
   }
   return { status: "ok", revision };
+}
+
+export async function pushSheetOrders(batch) {
+  const orders = batch.map(row => ({ ...row.request_body, operation_id: row.operation_id }));
+  const key = createHash("sha256").update(orders.map(order => order.operation_id).join("\n")).digest("hex");
+  const response = await n8nRequest("shipping-orders/batch", {
+    method: "POST", timeoutMs: 30_000,
+    headers: { "content-type": "application/json", "idempotency-key": key },
+    body: JSON.stringify({ orders })
+  });
+  if (response?.status !== "ok" || !Array.isArray(response.results) || response.results.length !== orders.length) {
+    throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Webhook batch không xác nhận đủ đơn hàng.");
+  }
+  const byCode = new Map(response.results.map(result => [result?.code, result]));
+  if (byCode.size !== orders.length || orders.some(order => !byCode.has(order.code))) {
+    throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", "Webhook batch trả mã đơn không khớp.");
+  }
+  return orders.map(order => {
+    const result = byCode.get(order.code);
+    if (result.status === "conflict" || result.status === "not-found") return result;
+    const revision = Number(result.revision);
+    if (result.status !== "ok" || !Number.isSafeInteger(revision)
+      || revision <= Number(order.expected_revision) || !sheetUpdateMatches(result.row, order)
+      || (order.method && result.row["Phương thức thanh toán"] !== order.method)
+      || Number(result.row.revision ?? result.row.Revision) !== revision) {
+      throw new AppError(502, "UPSTREAM_INVALID_RESPONSE", `Google Sheet chưa xác nhận đơn ${order.code}.`);
+    }
+    return { status: "ok", code: order.code, revision };
+  });
 }
