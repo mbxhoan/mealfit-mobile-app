@@ -100,6 +100,7 @@ export function toN8nBody(order, sheetId) {
   const remainingDue = order.paymentStatus === "Đã thanh toán"
     ? 0
     : Math.round(Number(order.remainingDue ?? Math.max(0, total - paidAmount)));
+  const paymentMethod = PAYMENT_METHODS.includes(order.paymentMethod) ? order.paymentMethod : Array.isArray(order.payments) ? order.payments.at(-1)?.method : "";
   return {
     sheet_id: sheetId,
     code: order.id,
@@ -107,7 +108,7 @@ export function toN8nBody(order, sheetId) {
     total: String(paidAmount),
     remaining_due: String(remainingDue),
     payment_staus: order.paymentStatus,
-    ...(order.paymentStatus === "Đã thanh toán" && PAYMENT_METHODS.includes(order.paymentMethod) ? { method: order.paymentMethod } : {}),
+    ...(order.paymentStatus === "Đã thanh toán" && PAYMENT_METHODS.includes(paymentMethod) ? { method: paymentMethod } : {}),
     shipping_status: order.deliveryStatus,
     note: order.note,
     expected_revision: Math.max(0, Math.round(Number(order.sourceRevision) || 0))
