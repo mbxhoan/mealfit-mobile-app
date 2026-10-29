@@ -84,7 +84,9 @@ let syncErrorShown = false;
 let stateWriteRunning = false;
 let lastServerRtt = null;
 let lastSyncAt = null;
+let lastSyncFailed = false;
 let conflictCount = 0;
+let shipperConflictItems = [];
 let changesPullRunning = false;
 let activityKind = "api";
 let activityRows = [];
@@ -284,13 +286,15 @@ function homeScreen() {
     ] : [])
   ];
   return `<main class="page">
-    <p class="home-date">${lastSyncAt ? `Đồng bộ ${timeLabel(lastSyncAt)}` : "Chưa đồng bộ đơn hàng"}</p>
+    ${lastSyncFailed
+      ? `<button type="button" class="home-date home-date-error" data-action="retry-sync">Đồng bộ lỗi · nhấn để thử lại</button>`
+      : `<p class="home-date">${lastSyncAt ? `Đồng bộ ${timeLabel(lastSyncAt)}` : "Chưa đồng bộ đơn hàng"}</p>`}
     <div class="home-summary" aria-label="Tóm tắt đơn hàng">
       <div class="summary-cell"><span class="summary-number">${counts.pending}</span><span class="summary-label">Chưa giao</span></div>
       <div class="summary-cell"><span class="summary-number">${counts.transit}</span><span class="summary-label">Đang giao</span></div>
       <div class="summary-cell"><span class="summary-number">${counts.delivered}</span><span class="summary-label">Đã giao</span></div>
     </div>
-    <div class="menu-grid">${menu.map(item => `<button class="menu-card" data-action="open-${item.action}"><span class="menu-icon">${icon(item.icon, 23)}</span><span><span class="menu-label">${item.title}</span><span class="menu-count">${item.count}</span></span></button>`).join("")}${role === "admin" && conflictCount ? `<button class="menu-card" data-action="open-conflicts"><span class="menu-icon">${icon("orders", 23)}</span><span><span class="menu-label">Xung đột</span><span class="menu-count">${conflictCount} đơn cần xử lý</span></span></button>` : ""}</div>
+    <div class="menu-grid">${menu.map(item => `<button class="menu-card" data-action="open-${item.action}"><span class="menu-icon">${icon(item.icon, 23)}</span><span><span class="menu-label">${item.title}</span><span class="menu-count">${item.count}</span></span></button>`).join("")}${role === "admin" && conflictCount ? `<button class="menu-card" data-action="open-conflicts"><span class="menu-icon">${icon("orders", 23)}</span><span><span class="menu-label">Xung đột</span><span class="menu-count">${conflictCount} đơn cần xử lý</span></span></button>` : ""}${role === "shipper" && shipperConflictItems.length ? `<button class="menu-card" data-action="open-outbox-conflicts"><span class="menu-icon">${icon("orders", 23)}</span><span><span class="menu-label">Xung đột</span><span class="menu-count">${shipperConflictItems.length} mục cần xử lý</span></span></button>` : ""}</div>
     ${!state.orders.length ? `<div class="empty-state" style="margin-top:14px">Chưa tải được đơn hàng.<button class="button secondary full" style="margin-top:12px" data-action="refresh">Thử đồng bộ</button></div>` : ""}
     ${syncRunning || sheetSyncRunning ? `<div class="sync-loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><div class="sync-loading-copy"><strong>Đang đồng bộ đơn hàng</strong><span class="sync-loading-skeleton" aria-hidden="true"><i></i><i></i><i></i></span></div></div>` : `<p class="sync-state" aria-live="polite">${navigator.onLine ? "Đã lưu trên thiết bị" : "Ngoại tuyến · Chờ bạn đồng bộ khi có mạng"}</p>`}
     ${activeSession() && role === "shipper" ? `<div class="divider"></div><button class="button full" data-action="open-session">Tiếp tục phiên giao hàng ${icon("chevron", 18)}</button>` : ""}
@@ -616,7 +620,7 @@ function sessionScreen() {
 function addOrdersScreen() {
   const session = activeSession();
   if (role !== "shipper" || !session || !["active", "notStarted"].includes(session.status)) return `<main class="page"><div class="empty-state">Tiếp tục phiên trước khi thêm đơn.</div></main>`;
-  const pending = state.orders.filter(order => isAssignedPendingOrder(order, user?.id));
+  const pending = state.orders.filter(order => isAssignedPendingOrder(order, user?.id) && !session.orderIds.includes(order.id));
   const eligibleIds = new Set(pending.map(order => order.id));
   const selectedIds = (window._addSelection || []).filter(id => eligibleIds.has(id));
   window._addSelection = selectedIds;
@@ -697,6 +701,7 @@ function renderModal() {
   }
   if (modal.type === "camera") return `<div class="modal-backdrop"><section class="modal camera-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Chụp ảnh đơn hàng</h2><video id="camera-video" autoplay playsinline></video><canvas id="camera-canvas" class="hidden-input"></canvas><p class="fine-print" data-camera-message>Đang mở camera…</p><div class="modal-actions"><button class="button secondary" data-action="close-camera">Đóng</button><button class="button" data-action="capture-photo" disabled>Chụp ảnh</button></div></section></div>`;
   if (modal.type === "conflicts") return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Xung đột đồng bộ</h2><p>${safe(modal.message || "Dữ liệu từ Google Sheet là nguồn chuẩn.")}</p>${(modal.items || []).map(item => `<div class="conflict-row"><strong>${safe(item.orderCode)}</strong><div class="modal-actions"><button class="button" data-action="resolve-conflict" data-id="${safe(item.conflictId)}" data-choice="sheet">Tải lại từ Sheet</button></div></div>`).join("") || '<p>Không còn xung đột cần xử lý.</p>'}<div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button><button class="button" data-action="retry-sync">Làm mới</button></div></section></div>`;
+  if (modal.type === "outbox-conflicts") return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Xung đột đồng bộ</h2><p>Các thay đổi sau chưa gửi lên được hệ thống.</p>${(modal.items || []).map(item => `<div class="conflict-row"><strong>${safe(item.type === "session" ? "Phiên giao hàng" : item.entityId)}</strong><div class="modal-actions"><button class="button" data-action="retry-outbox-conflict" data-id="${safe(item.id)}">Thử lại</button></div></div>`).join("") || '<p>Không còn xung đột cần xử lý.</p>'}<div class="modal-actions"><button class="button secondary" data-action="close-modal">Đóng</button></div></section></div>`;
   return "";
 }
 
@@ -912,6 +917,13 @@ function scheduleQueuedSync(delay = 120) {
   }, delay);
 }
 
+async function refreshShipperConflicts() {
+  if (!user || role !== "shipper") { shipperConflictItems = []; return; }
+  const outbox = await getOutbox(user.id);
+  const flaggedSessionIds = new Set(state.sessions.filter(session => session.syncConflict).map(session => session.id));
+  shipperConflictItems = outbox.filter(item => item.status === "conflict" && !(item.type === "session" && flaggedSessionIds.has(item.entityId)));
+}
+
 async function syncQueued() {
   if (!user || !navigator.onLine) throw new Error("Cần kết nối mạng để đồng bộ các thay đổi đang chờ.");
   if (syncRunning) throw new Error("Đang đồng bộ thay đổi khác. Vui lòng đợi hoàn tất rồi thử lại.");
@@ -1007,6 +1019,8 @@ async function syncQueued() {
     syncRunning = false;
     render();
   }
+  await refreshShipperConflicts();
+  render();
   const pending = (await getOutbox(user.id)).filter(item => !["done", "conflict"].includes(item.status));
   if (syncFailure) throw syncFailure;
   if (pending.length) throw new Error(`Còn ${pending.length} thay đổi chưa gửi được. Thử đồng bộ lại trước khi tải danh sách đơn.`);
@@ -1147,6 +1161,7 @@ async function pullRemoteOrders({ sheet = false } = {}) {
       try { conflictCount = (await apiRequest("/api/conflicts")).data.length; }
       catch { conflictCount = 0; }
     }
+    lastSyncFailed = false;
     lastSyncAt = Date.now();
     await setMeta(`lastSync:${user.id}`, lastSyncAt);
     if (sheet) resetWebhookRetryCooldown();
@@ -1236,7 +1251,7 @@ function startNetworkMonitor() {
     if (document.visibilityState === "visible") void probeNetwork();
   }, 12_000);
   changesPollTimer = setInterval(() => {
-    if (document.visibilityState === "visible") void pullChanges({ silent: true });
+    if (document.visibilityState === "visible") { void pullChanges({ silent: true }); scheduleQueuedSync(); }
   }, 5_000);
 }
 
@@ -1261,12 +1276,13 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
   viewStack = Array.isArray(savedStack) && savedStack.length && savedStack.every(view => validViewNames.has(view?.name))
     ? savedStack : [{ name: "home" }];
   lastSyncAt = await getMeta(`lastSync:${user.id}`) || null;
+  await refreshShipperConflicts();
   appInitialized = true;
   render();
   startNetworkMonitor();
   if (refresh && navigator.onLine) {
     try { await pullRemoteOrders({ sheet: true }); }
-    catch (error) { showError(error); }
+    catch (error) { lastSyncFailed = true; render(); showError(error); }
   }
   if (navigator.onLine) scheduleQueuedSync(0);
 }
@@ -1812,6 +1828,20 @@ app.addEventListener("click", async event => {
       render();
       await pullChanges();
     } catch (error) { showError(error); }
+    return;
+  }
+  if (action === "open-outbox-conflicts") {
+    await refreshShipperConflicts();
+    modal = { type: "outbox-conflicts", items: shipperConflictItems };
+    render(); return;
+  }
+  if (action === "retry-outbox-conflict") {
+    if (!setButtonBusy(button, true)) return;
+    await failOutbox(id, false);
+    await refreshShipperConflicts();
+    modal = shipperConflictItems.length ? { type: "outbox-conflicts", items: shipperConflictItems } : null;
+    render();
+    scheduleQueuedSync(0);
     return;
   }
   if (action === "close-camera") { webcam?.stop(); webcam = null; modal = null; render(); return; }

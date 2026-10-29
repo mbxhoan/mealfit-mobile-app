@@ -141,8 +141,14 @@ export default handler(async (req, res) => {
           WHERE order_code = ANY(${sheetCodes}::text[]) AND status = 'open'`;
       }
       if (user.role === "shipper") {
+        const previousSnapshot = await sql`SELECT value FROM mealfit_sync_meta WHERE key = ${`shipper-order-snapshot:${user.id}`} LIMIT 1`;
+        const previousCodes = previousSnapshot[0]?.value?.codes || [];
+        const stillOwned = previousCodes.length
+          ? (await sql`SELECT code FROM mealfit_orders WHERE code = ANY(${previousCodes}::text[]) AND assigned_user_id = ${user.id}`).map(row => row.code)
+          : [];
+        const mergedCodes = [...new Set([...stillOwned, ...sheetCodes])];
         await sql`INSERT INTO mealfit_sync_meta (key, value, updated_at)
-          VALUES (${`shipper-order-snapshot:${user.id}`}, ${JSON.stringify({ codes: sheetCodes })}::jsonb, now())
+          VALUES (${`shipper-order-snapshot:${user.id}`}, ${JSON.stringify({ codes: mergedCodes })}::jsonb, now())
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
       }
       stage = "sync-checkpoint";
