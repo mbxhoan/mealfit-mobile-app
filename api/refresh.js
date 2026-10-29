@@ -20,13 +20,16 @@ async function runMaintenance(req, res) {
     const modifiedSince = meta[0]?.updated_at ? new Date(new Date(meta[0].updated_at).valueOf() - 120_000).toISOString() : "";
     let cursor = "";
     let complete = false;
+    const importedRows = [];
     for (let page = 0; page < 100; page++) {
       const result = await fetchSheetOrders({ cursor, limit: 500, modifiedSince });
       sync.imported += await importSheetOrders(result.rows);
+      importedRows.push(...result.rows);
       if (!result.nextCursor) { complete = true; break; }
       cursor = result.nextCursor;
     }
     if (!complete) throw new AppError(413, "SHEET_PAGE_LIMIT", "Vượt giới hạn phân trang đồng bộ.");
+    await reconcileUpstreamWithSheet(importedRows);
     await markSheetPull(sync.imported);
     sync.pushed = await flushUpstream();
   } catch (error) {

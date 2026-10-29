@@ -11,15 +11,22 @@ export async function reconcileUpstreamWithSheet(rows) {
   if (!codes.length) return { confirmed: 0, conflicts: 0 };
   return withAdvisoryLock(772_024_101, async client => {
     const pending = await client.query(`SELECT DISTINCT ON (order_code)
-        operation_id, order_code, target_revision, request_body
+        operation_id, order_code, target_revision, request_body, status
       FROM mealfit_upstream_outbox
-      WHERE order_code = ANY($1::text[]) AND status IN ('sending', 'failed', 'conflict') AND attempts > 0
+      WHERE order_code = ANY($1::text[]) AND status IN ('queued', 'sending', 'failed', 'conflict')
       ORDER BY order_code, target_revision DESC, updated_at DESC`, [codes]);
     let confirmed = 0;
     let conflicts = 0;
     for (const item of pending.rows) {
       const sheetRow = sheet.get(item.order_code);
-      const matches = sheetUpdateMatches(sheetRow, { ...item.request_body, code: item.order_code });
+      if (item.status === "queued") {
+        // Never sent yet: only intervene if the Sheet already moved past the revision this push assumed —
+        // otherwise the Sheet simply hasn't caught up to this still-pending push and it is safe to flush normally.
+        const sheetRevision = Number(sheetRow?.revision ?? sheetRow?.Revision);
+        const expectedRevision = Number(item.request_body.expected_revision);
+        if (!Number.isSafeInteger(sheetRevision) || !Number.isSafeInteger(expectedRevision) || sheetRevision <= expectedRevision) continue;
+      }
+      const matches = item.status !== "queued" && sheetUpdateMatches(sheetRow, { ...item.request_body, code: item.order_code });
       if (matches) {
         const revision = Number(sheetRow?.revision ?? sheetRow?.Revision ?? Number(item.request_body.expected_revision) + 1);
         await client.query(`UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now()
