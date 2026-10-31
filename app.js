@@ -982,6 +982,31 @@ async function syncQueued() {
   return { sessionConflicts: [...sessionConflicts], webhookPending, confirmedOrders };
 }
 
+async function syncOrderChangeNow(orderId) {
+  if (!user) return;
+  if (!navigator.onLine) {
+    flash(`Đã lưu đơn ${orderId} trên thiết bị; cần mạng để đồng bộ lên Sheet.`);
+    return;
+  }
+  try {
+    const queued = (await getOutbox(user.id)).some(item => item.type === "order" && item.entityId === orderId && item.status !== "done");
+    if (!queued) throw new Error("Không tìm thấy thay đổi của đơn trong hàng đợi đồng bộ.");
+    try { await syncQueued(); }
+    catch (error) {
+      const stillPending = (await getOutbox(user.id)).some(item => item.type === "order" && item.entityId === orderId && item.status !== "done");
+      flash(stillPending
+        ? `Đã lưu đơn ${orderId} trên thiết bị; chưa đồng bộ được: ${error.message}`
+        : `Đơn ${orderId} đã đồng bộ; còn thay đổi khác chưa đồng bộ: ${error.message}`);
+      return;
+    }
+    const pending = (await getOutbox(user.id)).some(item => item.type === "order" && item.entityId === orderId && item.status !== "done");
+    if (pending) { flash(`Đã lưu đơn ${orderId} trên thiết bị; vẫn còn trong hàng đợi đồng bộ.`); return; }
+    flash(`Đã cập nhật đơn ${orderId} lên API và Sheet.`);
+  } catch (error) {
+    flash(`Đã lưu đơn ${orderId} trên thiết bị; chưa đồng bộ được: ${error.message}`);
+  }
+}
+
 async function syncQueuedAppLog() {
   if (!user || !navigator.onLine || syncRunning || appLogRunning) return;
   const ownerId = user.id;
@@ -1526,6 +1551,7 @@ async function deliverOrder(orderId) {
     const next = markDelivered(state, orderId);
     if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
     await updateState(next, "Đã ghi nhận giao hàng.");
+    await syncOrderChangeNow(orderId);
   } catch (error) { flash(error.message); }
 }
 
@@ -2041,6 +2067,7 @@ app.addEventListener("click", async event => {
         : status === "Đã giao hàng" ? "Đã đánh dấu đơn đã giao."
           : "Đã hủy đơn.";
       await updateState(next, message);
+      if (status === "Đã giao hàng") await syncOrderChangeNow(orderId);
     } catch (error) { modal = null; render(); flash(error.message); }
     return;
   }
@@ -2055,6 +2082,7 @@ app.addEventListener("click", async event => {
       if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
       modal = null;
       await updateState(next, "Đã giao hàng, khoản phải thu vẫn được ghi nhận.");
+      await syncOrderChangeNow(orderId);
     }
     catch (error) { modal = null; render(); flash(error.message); }
     return;
