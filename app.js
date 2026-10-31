@@ -71,7 +71,6 @@ let routeDragFrame = null;
 let toastTimer = null;
 let retryCountdownTimer = null;
 let networkProbeTimer = null;
-let changesPollTimer = null;
 let syncRunning = false;
 let syncKickTimer = null;
 let syncRetryDelay = 1_500;
@@ -196,10 +195,7 @@ function updateNetworkIndicator() {
 window.addEventListener("online", () => { updateNetworkIndicator(); scheduleQueuedSync(0); });
 window.addEventListener("offline", updateNetworkIndicator);
 window.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && user) {
-    void pullChanges({ silent: true });
-    scheduleQueuedSync(0);
-  }
+  if (document.visibilityState === "visible" && user) scheduleQueuedSync(0);
 });
 networkConnection?.addEventListener?.("change", updateNetworkIndicator);
 
@@ -1229,15 +1225,11 @@ async function syncOrderDetail(orderId) {
 
 function startNetworkMonitor() {
   clearInterval(networkProbeTimer);
-  clearInterval(changesPollTimer);
   if (!user) return;
   void probeNetwork();
   networkProbeTimer = setInterval(() => {
     if (document.visibilityState === "visible") void probeNetwork();
   }, 12_000);
-  changesPollTimer = setInterval(() => {
-    if (document.visibilityState === "visible") void pullChanges({ silent: true });
-  }, 5_000);
 }
 
 const validViewNames = new Set(["home", "orders", "sessions-overview", "session-create", "session", "add-orders", "order", "accounts"]);
@@ -1281,7 +1273,6 @@ async function restoreOfflineUser(userId) {
 
 async function logout() {
   clearInterval(networkProbeTimer);
-  clearInterval(changesPollTimer);
   try { await apiRequest("/api/auth/logout", { method: "POST", body: {} }); } catch { /* local logout must work offline */ }
   await setMeta("lastUser", null);
   role = null;
