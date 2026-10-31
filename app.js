@@ -1984,7 +1984,7 @@ app.addEventListener("click", async event => {
   if (action === "remove-stop") { if (role !== "shipper") { flash("Chỉ shipper có thể chỉnh sửa phiên."); return; } modal = { type: "remove-stop", orderId: id }; render(); return; }
   if (action === "confirm-remove-stop") {
     if (role !== "shipper") { modal = null; render(); flash("Chỉ shipper có thể chỉnh sửa phiên."); return; }
-    try { await updateState(removeOrderFromSession(state, modal.orderId), "Đơn đã trở về danh sách chưa giao."); modal = null; render(); }
+    try { await updateState(removeOrderFromSession(state, modal.orderId), "Đơn đã trở về danh sách Chưa giao. Thanh toán và số tiền được giữ nguyên; bấm Đồng bộ để cập nhật Sheet."); modal = null; render(); }
     catch (error) { modal = null; render(); flash(error.message); }
     return;
   }
