@@ -527,7 +527,7 @@ function sessionScreen() {
   const session = (view.sessionId && state.sessions.find(item => item.id === view.sessionId))
     || activeSession()
     || state.sessions.find(item => item.syncConflict && ["notStarted", "active", "paused"].includes(item.status));
-  if (session?.syncConflict) return `<main class="page"><div class="empty-state"><strong>Phiên cần khôi phục</strong><p>Phiên có ${session.orderIds.length} điểm giao vẫn được lưu trên thiết bị.</p><button class="button full" data-action="restore-session" data-id="${safe(session.id)}">Khôi phục phiên này</button></div></main>`;
+  if (session?.syncConflict) return `<main class="page"><div class="empty-state"><strong>Phiên cần khôi phục</strong><p>Phiên có ${session.orderIds.length} điểm giao vẫn được lưu trên thiết bị.</p><button class="button full" data-action="restore-session" data-id="${safe(session.id)}">Khôi phục phiên này</button><button class="button secondary full" style="margin-top:12px" data-action="new-session">Tạo phiên giao hàng mới</button></div></main>`;
   if (!session) {
     if (isStaff()) return staffSessionsScreen();
     const history = [...state.sessions].sort((a, b) => (b.startedAt || b.createdAt || 0) - (a.startedAt || a.createdAt || 0));

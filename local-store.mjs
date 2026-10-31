@@ -1,3 +1,5 @@
+import { restoreConflictedSession } from "./domain.mjs";
+
 const DB_NAME = "mealfit-prototype";
 const DB_VERSION = 3;
 let databasePromise;
@@ -82,11 +84,8 @@ export async function restoreSessionState(sessionId, userId) {
   const stateStore = tx.objectStore("state");
   const outbox = tx.objectStore("outbox");
   const record = await requestValue(stateStore.get(stateKey(userId)));
-  const state = record?.value || { orders: [], sessions: [], activeSessionId: null };
+  const state = restoreConflictedSession(record?.value || { orders: [], sessions: [], activeSessionId: null }, sessionId, userId);
   const session = state.sessions.find(item => item.id === sessionId);
-  if (!session) throw new Error("Không tìm thấy phiên giao hàng đã lưu trên thiết bị.");
-  delete session.syncConflict;
-  state.activeSessionId = sessionId;
   const entityKey = keyOf(userId, "session", sessionId);
   const pending = (await requestValue(outbox.index("entityKey").getAll(entityKey)))
     .filter(item => item.status === "conflict" || item.status === "queued")

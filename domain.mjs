@@ -314,6 +314,20 @@ export function cancelSession(state, cancelledAt = Date.now()) {
   };
 }
 
+export function restoreConflictedSession(state, sessionId, userId) {
+  const session = state.sessions.find(item => item.id === sessionId);
+  if (!session) throw new Error("Không tìm thấy phiên giao hàng đã lưu trên thiết bị.");
+  if (!session.syncConflict) throw new Error("Phiên không cần khôi phục.");
+  if (session.ownerId && session.ownerId !== userId) throw new Error("Phiên này thuộc tài khoản shipper khác.");
+  const anotherActiveSession = state.sessions.find(item => item.id !== sessionId && !item.syncConflict && OPEN_SESSION_STATUSES.includes(item.status));
+  if (anotherActiveSession) throw new Error("Hoàn tất phiên hiện tại trước khi khôi phục phiên khác.");
+  return {
+    ...state,
+    activeSessionId: sessionId,
+    sessions: state.sessions.map(item => item.id === sessionId ? { ...item, syncConflict: false } : item)
+  };
+}
+
 export function deleteSession(state, sessionId) {
   const session = state.sessions.find(item => item.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên giao hàng.");

@@ -25,7 +25,7 @@ async function applyOrder(client, operation, user) {
   if (!current) throw new AppError(404, "ORDER_NOT_FOUND", "Không tìm thấy đơn hàng cần cập nhật.");
   if (user.role === "shipper" && current.assigned_user_id !== user.id) {
     const route = payload.sessionId ? await client.query(`SELECT session_id FROM mealfit_sessions
-      WHERE session_id = $1 AND owner_id = $2 AND status IN ('notStarted', 'active', 'paused')
+      WHERE session_id = $1 AND owner_id = $2 AND status IN ('notStarted', 'active', 'paused', 'completed')
         AND (payload->'orderIds') ? $3 FOR SHARE`, [payload.sessionId, user.id, code]) : { rows: [] };
     if (!route.rows.length) return { id, code, conflict: true, errorCode: "ORDER_FORBIDDEN", revision: Number(current.revision) };
   }
