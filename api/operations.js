@@ -24,7 +24,10 @@ async function applyOrder(client, operation, user) {
   const current = found.rows[0];
   if (!current) throw new AppError(404, "ORDER_NOT_FOUND", "Không tìm thấy đơn hàng cần cập nhật.");
   if (user.role === "shipper" && current.assigned_user_id !== user.id) {
-    return { id, code, conflict: true, errorCode: "ORDER_FORBIDDEN", revision: Number(current.revision) };
+    const route = payload.sessionId ? await client.query(`SELECT session_id FROM mealfit_sessions
+      WHERE session_id = $1 AND owner_id = $2 AND status IN ('notStarted', 'active', 'paused')
+        AND (payload->'orderIds') ? $3 FOR SHARE`, [payload.sessionId, user.id, code]) : { rows: [] };
+    if (!route.rows.length) return { id, code, conflict: true, errorCode: "ORDER_FORBIDDEN", revision: Number(current.revision) };
   }
   let baseRevision = Number(operation.baseRevision);
   if (baseRevision !== Number(current.revision)) {
@@ -123,11 +126,12 @@ async function applySession(client, operation, user) {
   if (payload.orderIds.length) {
     const assigned = await client.query(`SELECT code, assigned_user_id, shipper_name, shipping_status FROM mealfit_orders WHERE code = ANY($1::text[])`, [payload.orderIds]);
     const ordersByCode = new Map(assigned.rows.map(order => [order.code, order]));
-    const unassignedCodes = payload.orderIds.filter(code => !sheetOrderBelongsToShipper(ordersByCode.get(code), user));
+    const retainedOrderIds = new Set(current?.owner_id === user.id && Array.isArray(current.payload?.orderIds) ? current.payload.orderIds : []);
+    const unassignedCodes = payload.orderIds.filter(code => !sheetOrderBelongsToShipper(ordersByCode.get(code), user) && !retainedOrderIds.has(code));
     if (unassignedCodes.length) {
       return { id, sessionId, conflict: true, errorCode: "SESSION_ORDER_FORBIDDEN", unassignedCodes, revision: currentRevision };
     }
-    const repairCodes = assigned.rows.filter(order => order.assigned_user_id !== ownerId).map(order => order.code);
+    const repairCodes = assigned.rows.filter(order => order.assigned_user_id !== ownerId && sheetOrderBelongsToShipper(order, user)).map(order => order.code);
     const repaired = repairCodes.length
       ? await client.query(`UPDATE mealfit_orders SET assigned_user_id = $2 WHERE code = ANY($1::text[]) RETURNING code`, [repairCodes, ownerId])
       : { rows: [] };

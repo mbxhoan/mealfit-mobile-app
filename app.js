@@ -35,7 +35,7 @@ import { apiRequest as sendApiRequest } from "./api-client.mjs";
 import {
   ackAppLog, ackOutbox, commitState, deletePhoto as deleteLocalPhoto, enqueueAppLog, failAppLog, failOutbox, getMeta, getOutbox,
   getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
-  nextAppLog, retryDeliveryConflict,
+  nextAppLog, restoreSessionState, retryDeliveryConflict,
   nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, rebaseOutbox, setMeta, writeStateSnapshot
 } from "./local-store.mjs";
 import { inject } from '@vercel/analytics';
@@ -71,11 +71,7 @@ let routeDragFrame = null;
 let toastTimer = null;
 let retryCountdownTimer = null;
 let networkProbeTimer = null;
-let changesPollTimer = null;
 let syncRunning = false;
-let syncKickTimer = null;
-let syncRetryDelay = 1_500;
-let sheetSyncPendingNoticeFor = null;
 let appLogRunning = false;
 let photoSyncRunning = false;
 let sheetSyncRunning = false;
@@ -195,14 +191,8 @@ function updateNetworkIndicator() {
   indicator.className = `network-indicator signal-${signal}`;
   indicator.setAttribute("aria-label", user ? `Kiểm tra API · ${networkLabels[signal]}` : networkLabels[signal]);
 }
-window.addEventListener("online", () => { updateNetworkIndicator(); scheduleQueuedSync(0); });
+window.addEventListener("online", updateNetworkIndicator);
 window.addEventListener("offline", updateNetworkIndicator);
-window.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && user) {
-    void pullChanges({ silent: true });
-    scheduleQueuedSync(0);
-  }
-});
 networkConnection?.addEventListener?.("change", updateNetworkIndicator);
 
 async function probeNetwork() {
@@ -534,8 +524,10 @@ function elapsedLabel(durationMs) {
 
 function sessionScreen() {
   const view = currentView();
-  const session = (view.sessionId && state.sessions.find(item => item.id === view.sessionId)) || activeSession();
-  if (session?.syncConflict) return `<main class="page"><div class="empty-state"><strong>Phiên cũ cần làm mới</strong><p>Phiên có ${session.orderIds.length} điểm giao không còn được gán đầy đủ cho tài khoản này. Dữ liệu phiên vẫn được giữ trên thiết bị.</p><button class="button full" data-action="new-session">Tạo phiên giao hàng mới</button></div></main>`;
+  const session = (view.sessionId && state.sessions.find(item => item.id === view.sessionId))
+    || activeSession()
+    || state.sessions.find(item => item.syncConflict && ["notStarted", "active", "paused"].includes(item.status));
+  if (session?.syncConflict) return `<main class="page"><div class="empty-state"><strong>Phiên cần khôi phục</strong><p>Phiên có ${session.orderIds.length} điểm giao vẫn được lưu trên thiết bị.</p><button class="button full" data-action="restore-session" data-id="${safe(session.id)}">Khôi phục phiên này</button></div></main>`;
   if (!session) {
     if (isStaff()) return staffSessionsScreen();
     const history = [...state.sessions].sort((a, b) => (b.startedAt || b.createdAt || 0) - (a.startedAt || a.createdAt || 0));
@@ -878,43 +870,6 @@ async function updateState(next, message) {
   lastPersistedState = cloneState(state);
   render();
   if (message) flash(`${message} · Đã lưu trên thiết bị`);
-  scheduleQueuedSync();
-}
-
-function scheduleQueuedSync(delay = 120) {
-  if (!user || !navigator.onLine) return;
-  clearTimeout(syncKickTimer);
-  syncKickTimer = setTimeout(async () => {
-    syncKickTimer = null;
-    if (!user || !navigator.onLine) return;
-    if (syncRunning || sheetSyncRunning) { scheduleQueuedSync(350); return; }
-    try {
-      const result = await syncQueued();
-      syncRetryDelay = 1_500;
-      sheetSyncPendingNoticeFor = null;
-      if (result.webhookPending) flash(`Đã lưu thay đổi · webhook n8n đang cập nhật ${result.webhookPending} đơn.`);
-      else if (result.confirmedOrders) flash(`Google Sheet đã xác nhận ${result.confirmedOrders} đơn.`);
-    } catch (error) {
-      if (error.status === 401) { void logout(); return; }
-      if (error.code === "SESSION_ORDERS_PENDING") { scheduleQueuedSync(error.retryAfterMs || 5_000); return; }
-      if (error.code === "SHEET_SYNC_PENDING") {
-        if (sheetSyncPendingNoticeFor !== user.id) {
-          sheetSyncPendingNoticeFor = user.id;
-          flash(error.message);
-        }
-        scheduleQueuedSync(error.retryAfterMs || 5_000);
-        return;
-      }
-      if ([400, 403, 404, 409].includes(error.status)) {
-        if (!syncErrorShown) { syncErrorShown = true; showError(error); }
-        return;
-      }
-      const retryIn = syncRetryDelay;
-      syncRetryDelay = Math.min(30_000, syncRetryDelay * 2);
-      scheduleQueuedSync(retryIn);
-      if (!syncErrorShown) { syncErrorShown = true; showError(error); }
-    }
-  }, delay);
 }
 
 async function refreshShipperConflicts() {
@@ -1136,10 +1091,7 @@ async function pullRemoteOrders({ sheet = false } = {}) {
       }
     } while (cursor);
     const remoteSessions = sessions.data || [];
-    const conflictedSessionIds = new Set([
-      ...sessionConflicts,
-      ...state.sessions.filter(session => session.syncConflict).map(session => session.id)
-    ]);
+    const conflictedSessionIds = new Set(sessionConflicts);
     state = normalizeState(await mergeRemote({ sessions: remoteSessions }, user.id));
     if (role === "shipper" && shipperSnapshot) {
       if (conflictedSessionIds.size) {
@@ -1244,15 +1196,11 @@ async function syncOrderDetail(orderId) {
 
 function startNetworkMonitor() {
   clearInterval(networkProbeTimer);
-  clearInterval(changesPollTimer);
   if (!user) return;
   void probeNetwork();
   networkProbeTimer = setInterval(() => {
     if (document.visibilityState === "visible") void probeNetwork();
   }, 12_000);
-  changesPollTimer = setInterval(() => {
-    if (document.visibilityState === "visible") { void pullChanges({ silent: true }); scheduleQueuedSync(); }
-  }, 5_000);
 }
 
 const validViewNames = new Set(["home", "orders", "sessions-overview", "session-create", "session", "add-orders", "order", "accounts"]);
@@ -1284,7 +1232,6 @@ async function activateUser(nextUser, { restoreView = true, refresh = true } = {
     try { await pullRemoteOrders({ sheet: true }); }
     catch (error) { lastSyncFailed = true; render(); showError(error); }
   }
-  if (navigator.onLine) scheduleQueuedSync(0);
 }
 
 async function restoreOfflineUser(userId) {
@@ -1297,7 +1244,6 @@ async function restoreOfflineUser(userId) {
 
 async function logout() {
   clearInterval(networkProbeTimer);
-  clearInterval(changesPollTimer);
   try { await apiRequest("/api/auth/logout", { method: "POST", body: {} }); } catch { /* local logout must work offline */ }
   await setMeta("lastUser", null);
   role = null;
@@ -1580,20 +1526,7 @@ async function deliverOrder(orderId) {
     const next = markDelivered(state, orderId);
     if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
     await updateState(next, "Đã ghi nhận giao hàng.");
-    await syncDeliveryUpdate();
   } catch (error) { flash(error.message); }
-}
-
-async function syncDeliveryUpdate() {
-  if (!navigator.onLine || syncRunning || sheetSyncRunning) return;
-  try {
-    const result = await syncQueued();
-    if (result.webhookPending) flash(`Đã lưu thay đổi · webhook n8n đang cập nhật ${result.webhookPending} đơn.`);
-    else if (result.confirmedOrders) flash(`Google Sheet đã xác nhận ${result.confirmedOrders} đơn.`);
-  } catch (error) {
-    if (error.status === 401) { void logout(); return; }
-    if (!syncErrorShown) { syncErrorShown = true; showError(error); }
-  }
 }
 
 function openPayment(orderId) {
@@ -1841,7 +1774,6 @@ app.addEventListener("click", async event => {
     await refreshShipperConflicts();
     modal = shipperConflictItems.length ? { type: "outbox-conflicts", items: shipperConflictItems } : null;
     render();
-    scheduleQueuedSync(0);
     return;
   }
   if (action === "close-camera") { webcam?.stop(); webcam = null; modal = null; render(); return; }
@@ -1874,6 +1806,17 @@ app.addEventListener("click", async event => {
   if (action === "open-session-overview") { navigate({ name: "sessions-overview" }); return; }
   if (action === "open-session") { sessionTab = "route"; navigate({ name: "session" }); return; }
   if (action === "open-session-history") { sessionTab = "route"; navigate({ name: "session", sessionId: id }); return; }
+  if (action === "restore-session") {
+    const session = state.sessions.find(item => item.id === id);
+    if (role !== "shipper" || !session || (session.ownerId && session.ownerId !== user?.id)) { flash("Phiên này không thuộc tài khoản đang đăng nhập."); return; }
+    try {
+      state = normalizeState(await restoreSessionState(id, user.id));
+      lastPersistedState = cloneState(state);
+      render();
+      flash("Đã khôi phục phiên giao hàng trên thiết bị.");
+    } catch (error) { flash(error.message); }
+    return;
+  }
   if (action === "open-order") { navigate({ name: "order", orderId: id, fromSession: false }); return; }
   if (action === "open-order-session") { navigate({ name: "order", orderId: id, fromSession: true }); return; }
   if (action === "filter-orders") { orderFilter = button.dataset.filter; orderListLimit = 50; render(); return; }
@@ -2112,7 +2055,6 @@ app.addEventListener("click", async event => {
       if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);
       modal = null;
       await updateState(next, "Đã giao hàng, khoản phải thu vẫn được ghi nhận.");
-      await syncDeliveryUpdate();
     }
     catch (error) { modal = null; render(); flash(error.message); }
     return;

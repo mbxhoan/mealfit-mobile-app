@@ -76,6 +76,35 @@ export async function writeStateSnapshot(value, userId) {
   await complete(tx);
 }
 
+export async function restoreSessionState(sessionId, userId) {
+  const db = await openLocalDb();
+  const tx = db.transaction(["state", "outbox"], "readwrite");
+  const stateStore = tx.objectStore("state");
+  const outbox = tx.objectStore("outbox");
+  const record = await requestValue(stateStore.get(stateKey(userId)));
+  const state = record?.value || { orders: [], sessions: [], activeSessionId: null };
+  const session = state.sessions.find(item => item.id === sessionId);
+  if (!session) throw new Error("Không tìm thấy phiên giao hàng đã lưu trên thiết bị.");
+  delete session.syncConflict;
+  state.activeSessionId = sessionId;
+  const entityKey = keyOf(userId, "session", sessionId);
+  const pending = (await requestValue(outbox.index("entityKey").getAll(entityKey)))
+    .filter(item => item.status === "conflict" || item.status === "queued")
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const operation = pending.at(-1);
+  if (operation) {
+    operation.status = "queued";
+    operation.baseRevision = Number(session.serverRevision) || 0;
+    operation.payload = clone(session);
+    operation.updatedAt = Date.now();
+    outbox.put(operation);
+    for (const item of pending) if (item.id !== operation.id) outbox.delete(item.id);
+  }
+  stateStore.put({ key: stateKey(userId), value: state, updatedAt: Date.now() });
+  await complete(tx);
+  return clone(state);
+}
+
 function entityChanges(previous, next) {
   const changes = [];
   for (const type of ["order", "session"]) {
