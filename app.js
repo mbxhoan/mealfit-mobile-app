@@ -21,6 +21,7 @@ import {
   reorderOrderInSession,
   resolveOrphanDelivery,
   reopenDeliveredOrder,
+  restoreConflictedSession,
   resumeSession,
   setOrderNote,
   setOrderMapsLink,
@@ -527,7 +528,7 @@ function elapsedLabel(durationMs) {
 function sessionScreen() {
   const view = currentView();
   const session = (view.sessionId && state.sessions.find(item => item.id === view.sessionId)) || activeSession();
-  if (session?.syncConflict) return `<main class="page"><div class="empty-state"><strong>Phiên cũ cần làm mới</strong><p>Phiên có ${session.orderIds.length} điểm giao không còn được gán đầy đủ cho tài khoản này. Dữ liệu phiên vẫn được giữ trên thiết bị.</p><button class="button full" data-action="new-session">Tạo phiên giao hàng mới</button></div></main>`;
+  if (session?.syncConflict) return `<main class="page"><div class="empty-state"><strong>Phiên cũ cần làm mới</strong><p>Phiên có ${session.orderIds.length} điểm giao không còn được gán đầy đủ cho tài khoản này. Dữ liệu phiên vẫn được giữ trên thiết bị.</p><button class="button full" data-action="restore-session" data-id="${safe(session.id)}">Khôi phục phiên này</button><button class="button secondary full" style="margin-top:12px" data-action="new-session">Tạo phiên giao hàng mới</button></div></main>`;
   if (!session) {
     if (isStaff()) return staffSessionsScreen();
     const history = [...state.sessions].sort((a, b) => (b.startedAt || b.createdAt || 0) - (a.startedAt || a.createdAt || 0));
@@ -1899,6 +1900,17 @@ app.addEventListener("click", async event => {
       viewStack[viewStack.length - 1] = { name: "session" };
       persistLastView();
       sessionTab = "route"; render();
+    } catch (error) { flash(error.message); }
+    return;
+  }
+  if (action === "restore-session") {
+    if (role !== "shipper") { flash("Phiên giao hàng dành cho shipper."); return; }
+    try {
+      state = normalizeState(restoreConflictedSession(state, id, user.id));
+      lastPersistedState = cloneState(state);
+      await writeStateSnapshot(state, user.id);
+      render();
+      flash("Đã khôi phục phiên giao hàng.");
     } catch (error) { flash(error.message); }
     return;
   }

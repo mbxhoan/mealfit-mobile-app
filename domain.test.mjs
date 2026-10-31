@@ -24,6 +24,7 @@ import {
   removeOrderFromSession,
   reopenDeliveredOrder,
   resolveOrphanDelivery,
+  restoreConflictedSession,
   resumeSession,
   setOrderMapsLink,
   setOrderNote,
@@ -324,6 +325,42 @@ test("deleting a session clears stale route fields on every unfinished stop", ()
   assert.equal(order(deleted, "B").deliveryMethod, null);
   assert.equal(order(deleted, "B").sessionId, null);
   assert.equal(order(deleted, "B").deliveredAt, null);
+});
+
+test("restoring a conflicted session clears the flag once every stop is still assigned to this shipper", () => {
+  let state = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  state = {
+    ...state,
+    orders: state.orders.map(item => ["A", "B"].includes(item.id) ? { ...item, assignedUserId: "hieu" } : item)
+  };
+  const sessionId = state.activeSessionId;
+  state = { ...state, activeSessionId: null, sessions: state.sessions.map(item => item.id === sessionId ? { ...item, syncConflict: true } : item) };
+
+  const restored = restoreConflictedSession(state, sessionId, "hieu");
+  assert.equal(restored.activeSessionId, sessionId);
+  assert.equal(restored.sessions.find(item => item.id === sessionId).syncConflict, false);
+});
+
+test("restoring a conflicted session is blocked while a stop is no longer assigned to this shipper", () => {
+  let state = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  state = {
+    ...state,
+    orders: state.orders.map(item => item.id === "A" ? { ...item, assignedUserId: "hoan" } : item.id === "B" ? { ...item, assignedUserId: "hieu" } : item)
+  };
+  const sessionId = state.activeSessionId;
+  state = { ...state, activeSessionId: null, sessions: state.sessions.map(item => item.id === sessionId ? { ...item, syncConflict: true } : item) };
+
+  assert.throws(() => restoreConflictedSession(state, sessionId, "hieu"));
+});
+
+test("restoring a conflicted session is blocked while another session is already active", () => {
+  let state = startSession(createSession(seed(), ["A"], { A: "Sáng" }, 1000), 2000);
+  state = { ...state, orders: state.orders.map(item => item.id === "A" ? { ...item, assignedUserId: "hieu" } : item) };
+  const conflictedId = state.activeSessionId;
+  state = { ...state, activeSessionId: null, sessions: state.sessions.map(item => item.id === conflictedId ? { ...item, syncConflict: true } : item) };
+  state = startSession(createSession(state, ["B"], { B: "Sáng" }, 3000), 4000);
+
+  assert.throws(() => restoreConflictedSession(state, conflictedId, "hieu"));
 });
 
 test("route stats count session cash and transfer collections, route value and completed shifts", () => {

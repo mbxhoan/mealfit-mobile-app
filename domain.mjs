@@ -314,6 +314,22 @@ export function cancelSession(state, cancelledAt = Date.now()) {
   };
 }
 
+export function restoreConflictedSession(state, sessionId, userId) {
+  const session = state.sessions.find(item => item.id === sessionId);
+  if (!session || !session.syncConflict) throw new Error("Phiên không cần khôi phục.");
+  if (getActiveSession(state)) throw new Error("Hoàn tất phiên hiện tại trước khi khôi phục phiên khác.");
+  const unassigned = session.orderIds.filter(id => {
+    const order = getOrder(state, id);
+    return !order || (order.assignedUserId !== userId && !["Đã giao hàng", "Đã huỷ đơn"].includes(order.deliveryStatus));
+  });
+  if (unassigned.length) throw new Error(`Còn ${unassigned.length} điểm giao không còn được gán cho bạn. Không thể khôi phục phiên này.`);
+  return {
+    ...state,
+    activeSessionId: sessionId,
+    sessions: state.sessions.map(item => item.id === sessionId ? { ...item, syncConflict: false } : item)
+  };
+}
+
 export function deleteSession(state, sessionId) {
   const session = state.sessions.find(item => item.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên giao hàng.");
