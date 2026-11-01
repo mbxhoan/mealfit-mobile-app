@@ -92,7 +92,7 @@ async function applyOrder(client, operation, user) {
       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (payment_id) DO NOTHING`,
       [`${id}:${index}`, code, payment.sessionId || null, user.id, payment.method, Math.round(Number(payment.amount)), new Date(payment.paidAt || Date.now()).toISOString()]);
   }
-  await queueUpstream(client, id, { ...payload, id: code, shipperName, total, paidAmount, remainingDue, paymentStatus: payload.paymentStatus, deliveryStatus: payload.deliveryStatus, note: payload.note }, revision);
+  await queueUpstream(client, id, { ...payload, id: code, shipperName, total, paidAmount, remainingDue, paymentStatus: payload.paymentStatus, deliveryStatus: payload.deliveryStatus, note: payload.note }, revision, current.row_data);
   await client.query("INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, operation_id, detail) VALUES ($1, 'order', $2, 'update', $3, $4::jsonb)", [user.id, code, id, JSON.stringify({ revision })]);
   const result = { id, code, revision };
   await client.query("INSERT INTO mealfit_operations (operation_id, actor_id, entity_type, entity_id, body_hash, result) VALUES ($1, $2, 'order', $3, $4, $5::jsonb)", [id, user.id, code, bodyHash, JSON.stringify(result)]);
@@ -189,8 +189,11 @@ export default handler(async (req, res) => {
     .filter(operation => operation.type === "order")
     .map(operation => operation.entityId || operation.payload?.id)
     .filter(Boolean).map(String))];
+  let upstreamPending = [];
+  let upstreamError = null;
   if (orderCodes.length) {
-    await flushUpstream(50, orderCodes);
+    try { await flushUpstream(50, orderCodes); }
+    catch (error) { upstreamError = error?.code || "OUTBOX_SYNC_FAILED"; }
     const pending = await pendingUpstream(orderCodes);
     const conflicts = new Set(pending.filter(item => item.status === "conflict").map(item => item.order_code));
     if (conflicts.size) {
@@ -200,12 +203,8 @@ export default handler(async (req, res) => {
       });
       return;
     }
-    if (pending.length) {
-      const retryAt = Math.min(...pending.map(item => new Date(item.next_attempt_at).getTime()).filter(Number.isFinite));
-      const error = new AppError(503, "SHEET_SYNC_PENDING", "Google Sheet chưa xác nhận đủ số tiền và trạng thái. Thay đổi đã được lưu và sẽ tự đồng bộ lại.");
-      error.retryAfterSeconds = Number.isFinite(retryAt) ? Math.max(3, Math.min(30, Math.ceil((retryAt - Date.now()) / 1000))) : 5;
-      throw error;
-    }
+    upstreamPending = pending;
+    upstreamError ||= pending.find(item => item.last_error)?.last_error || null;
   }
   const orderPayloads = new Map(operations
     .filter(operation => operation.type === "order")
@@ -235,5 +234,10 @@ export default handler(async (req, res) => {
     });
     return;
   }
-  send(res, 200, { results, upstreamPending: 0 });
+  send(res, 200, {
+    results,
+    upstreamPending: upstreamPending.length,
+    upstreamPendingOrders: [...new Set(upstreamPending.map(item => item.order_code))],
+    upstreamError
+  });
 });

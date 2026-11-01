@@ -38,7 +38,7 @@ export default handler(async (req, res) => {
       };
       if (update.rows[0]) {
         const operationId = randomUUID();
-        await queueUpstream(client, operationId, normalized, order.revision);
+        await queueUpstream(client, operationId, normalized, order.revision, order.row_data);
         await client.query(
           "INSERT INTO mealfit_audit_log (actor_id, entity_type, entity_id, operation, operation_id) VALUES ($1, 'order', $2, 'claim', $3)",
           [user.id, code, operationId]

@@ -209,10 +209,11 @@ export async function fetchSheetOrder(code) {
 }
 
 export async function pushSheetOrder(body, idempotencyKey) {
+  const { expected_sheet_state: _expectedSheetState, ...payload } = body;
   const result = await n8nRequest("shipping-order", {
     method: "POST",
     headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
-    body: JSON.stringify({ ...body, operation_id: idempotencyKey })
+    body: JSON.stringify({ ...payload, operation_id: idempotencyKey })
   });
   if (result.status === "conflict") throw new AppError(409, "SHEET_REVISION_CONFLICT", "Dữ liệu Google Sheet đã thay đổi. Admin cần kiểm tra xung đột trước khi đồng bộ tiếp.");
   if (result.status === "ok" && Number.isSafeInteger(Number(result.revision))) {
@@ -237,7 +238,10 @@ export async function pushSheetOrder(body, idempotencyKey) {
 }
 
 export async function pushSheetOrders(batch) {
-  const orders = batch.map(row => ({ ...row.request_body, operation_id: row.operation_id }));
+  const orders = batch.map(row => {
+    const { expected_sheet_state: _expectedSheetState, ...payload } = row.request_body;
+    return { ...payload, operation_id: row.operation_id };
+  });
   const key = createHash("sha256").update(orders.map(order => order.operation_id).join("\n")).digest("hex");
   const response = await n8nRequest("shipping-orders/batch", {
     method: "POST", timeoutMs: 30_000,

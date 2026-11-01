@@ -5,6 +5,43 @@ import { toN8nBody } from "./orders.mjs";
 import { sheetId, fetchSheetOrder, pushSheetOrder, pushSheetOrders } from "./n8n.mjs";
 import { importSheetOrders, sheetUpdateMatches } from "./sync.mjs";
 
+const amount = value => Number(String(value ?? "0").replace(/[^\d-]/g, "")) || 0;
+const text = value => String(value ?? "").normalize("NFC").trim();
+
+function field(row, ...keys) {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(row || {}, key)) return { found: true, value: row[key] };
+  }
+  return { found: false, value: undefined };
+}
+
+export function captureSheetState(row, body) {
+  const fields = {
+    shipper: field(row, "Shipper", "shipper"),
+    paid_amount: field(row, "Đã thanh toán", "total"),
+    remaining_due: field(row, "TỔNG THANH TOÁN", "remaining_due"),
+    payment_status: field(row, "Trạng thái đơn", "payment_status"),
+    shipping_status: field(row, "Trạng thái giao hàng", "shipping_status"),
+    note: field(row, "Ghi chú bởi shipper", "note")
+  };
+  if (body?.method != null) fields.method = field(row, "Phương thức thanh toán", "method");
+  return {
+    complete: Object.values(fields).every(item => item.found),
+    values: Object.fromEntries(Object.entries(fields).map(([key, item]) => [key, item.value ?? ""]))
+  };
+}
+
+export function sheetMatchesExpectedState(row, body) {
+  const expected = body?.expected_sheet_state;
+  if (!expected?.complete || !row) return false;
+  const current = captureSheetState(row, body);
+  if (!current.complete) return false;
+  return Object.entries(expected.values).every(([key, value]) => {
+    if (key === "paid_amount" || key === "remaining_due") return amount(current.values[key]) === amount(value);
+    return text(current.values[key]) === text(value);
+  });
+}
+
 export async function reconcileUpstreamWithSheet(rows) {
   const sheet = new Map(rows.map(row => [String(row?.["Mã đơn"] || row?.code || "").trim(), row]));
   const codes = [...sheet.keys()].filter(Boolean);
@@ -14,28 +51,26 @@ export async function reconcileUpstreamWithSheet(rows) {
         operation_id, order_code, target_revision, request_body, status
       FROM mealfit_upstream_outbox
       WHERE order_code = ANY($1::text[]) AND status IN ('queued', 'sending', 'failed', 'conflict')
-      ORDER BY order_code, target_revision DESC, updated_at DESC`, [codes]);
+      ORDER BY order_code, target_revision ASC, updated_at ASC`, [codes]);
     let confirmed = 0;
     let conflicts = 0;
     for (const item of pending.rows) {
       const sheetRow = sheet.get(item.order_code);
-      if (item.status === "queued") {
-        // Never sent yet: only intervene if the Sheet already moved past the revision this push assumed —
-        // otherwise the Sheet simply hasn't caught up to this still-pending push and it is safe to flush normally.
-        const sheetRevision = Number(sheetRow?.revision ?? sheetRow?.Revision);
-        const expectedRevision = Number(item.request_body.expected_revision);
-        if (!Number.isSafeInteger(sheetRevision) || !Number.isSafeInteger(expectedRevision) || sheetRevision <= expectedRevision) continue;
-      }
-      const matches = item.status !== "queued" && sheetUpdateMatches(sheetRow, { ...item.request_body, code: item.order_code });
+      const matches = sheetUpdateMatches(sheetRow, { ...item.request_body, code: item.order_code });
       if (matches) {
         const revision = Number(sheetRow?.revision ?? sheetRow?.Revision ?? Number(item.request_body.expected_revision) + 1);
         await client.query(`UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now()
-          WHERE order_code = $1 AND status IN ('queued', 'sending', 'failed', 'conflict')`, [item.order_code]);
+          WHERE operation_id = $1 AND status IN ('queued', 'sending', 'failed', 'conflict')`, [item.operation_id]);
         if (Number.isSafeInteger(revision)) await client.query(`UPDATE mealfit_orders
           SET source_revision = $2, row_data = jsonb_set(row_data, '{revision}', to_jsonb($2::bigint), true), synced_at = now()
           WHERE code = $1`, [item.order_code, revision]);
         confirmed++;
       } else {
+        const sheetRevision = Number(sheetRow?.revision ?? sheetRow?.Revision);
+        const expectedRevision = Number(item.request_body.expected_revision);
+        const sheetAdvanced = Number.isSafeInteger(sheetRevision) && Number.isSafeInteger(expectedRevision) && sheetRevision > expectedRevision;
+        const expectedStateMatches = sheetMatchesExpectedState(sheetRow, item.request_body);
+        if (item.status === "conflict" || (expectedStateMatches && !sheetAdvanced)) continue;
         await client.query(`UPDATE mealfit_upstream_outbox SET status = 'conflict', last_error = 'SHEET_STATE_DIVERGED', updated_at = now()
           WHERE order_code = $1 AND status IN ('queued', 'sending', 'failed')`, [item.order_code]);
         const orderRows = await client.query("SELECT * FROM mealfit_orders WHERE code = $1 FOR UPDATE", [item.order_code]);
@@ -69,13 +104,18 @@ export async function reconcileUpstreamWithSheet(rows) {
   });
 }
 
-export async function queueUpstream(client, operationId, order, revision) {
+export async function queueUpstream(client, operationId, order, revision, expectedSheetRow = null) {
+  const previous = await client.query(`SELECT request_body FROM mealfit_upstream_outbox
+    WHERE order_code = $1 AND status = 'queued' AND attempts = 0
+    ORDER BY target_revision DESC LIMIT 1`, [order.id]);
   await client.query("DELETE FROM mealfit_upstream_outbox WHERE order_code = $1 AND status = 'queued' AND attempts = 0", [order.id]);
   const state = await client.query(`SELECT o.source_revision,
     (SELECT count(*)::int FROM mealfit_upstream_outbox q WHERE q.order_code = o.code AND q.status IN ('queued', 'sending', 'failed')) AS pending
     FROM mealfit_orders o WHERE o.code = $1`, [order.id]);
   const expectedRevision = Number(state.rows[0]?.source_revision || 0) + Number(state.rows[0]?.pending || 0);
   const body = toN8nBody({ ...order, sourceRevision: expectedRevision }, sheetId());
+  if (previous.rows[0]) body.expected_sheet_state = previous.rows[0].request_body?.expected_sheet_state || { complete: false, values: {} };
+  else if (expectedSheetRow) body.expected_sheet_state = captureSheetState(expectedSheetRow, body);
   await client.query(
     "INSERT INTO mealfit_upstream_outbox (operation_id, order_code, target_revision, request_body) VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (operation_id) DO NOTHING",
     [operationId || randomUUID(), order.id, revision, JSON.stringify(body)]
@@ -86,18 +126,30 @@ export async function pendingUpstream(orderCodes) {
   if (!orderCodes?.length) return [];
   const codes = [...new Set(orderCodes.map(String).filter(Boolean))];
   if (!codes.length) return [];
-  return getSql()`SELECT order_code, status, next_attempt_at FROM mealfit_upstream_outbox
+  return getSql()`SELECT order_code, status, next_attempt_at, last_error FROM mealfit_upstream_outbox
     WHERE order_code = ANY(${codes}::text[]) AND status IN ('queued', 'sending', 'failed', 'conflict')`;
 }
 
-export async function flushUpstream(batchSize = 20, orderCodes = null) {
+export async function flushUpstream(batchSize = 20, orderCodes = null, { forceRetry = false } = {}) {
   const codes = orderCodes?.length ? [...new Set(orderCodes.map(String).filter(Boolean))] : null;
   try {
     return await withAdvisoryLock(772_024_101, async () => {
       await getSql()`UPDATE mealfit_upstream_outbox SET status = 'failed', last_error = 'WORKER_INTERRUPTED', next_attempt_at = now(), updated_at = now()
         WHERE status = 'sending' AND updated_at < now() - interval '2 minutes'
           AND (${codes === null} OR order_code = ANY(${codes || []}::text[]))`;
+      if (forceRetry) await getSql()`UPDATE mealfit_upstream_outbox SET next_attempt_at = now(), updated_at = now()
+        WHERE status = 'failed' AND next_attempt_at > now()
+          AND (${codes === null} OR order_code = ANY(${codes || []}::text[]))`;
     let sent = 0;
+    const recordFailure = async (row, error) => {
+      if (error?.status === 409) {
+        await getSql()`UPDATE mealfit_upstream_outbox SET status = 'conflict', last_error = 'SHEET_REVISION_CONFLICT', updated_at = now() WHERE operation_id = ${row.operation_id}`;
+        try { await importSheetOrders([await fetchSheetOrder(row.order_code)]); } catch {}
+      } else {
+        const delaySeconds = Math.min(3600, 30 * (2 ** Math.min(Number(row.attempts) || 0, 7)));
+        await getSql()`UPDATE mealfit_upstream_outbox SET status = 'failed', last_error = ${String(error?.code || "UPSTREAM_ERROR")}, next_attempt_at = now() + (${delaySeconds} * interval '1 second'), updated_at = now() WHERE operation_id = ${row.operation_id}`;
+      }
+    };
     for (let pass = 0; pass < 3; pass++) {
       const batch = await withTransaction(async client => {
         const selected = await client.query(`
@@ -122,15 +174,33 @@ export async function flushUpstream(batchSize = 20, orderCodes = null) {
         return selected.rows;
       });
       if (!batch.length) break;
-      let results = null;
-      if (batch.length > 1) {
-        try { results = await pushSheetOrders(batch); }
-        catch (error) {
-          // The old workflow has no batch route; keep its single-order path during rollout.
-          if (error?.upstreamStatus !== 404) results = batch.map(() => ({ error }));
+      const readyBatch = [];
+      for (const row of batch) {
+        try {
+          const currentSheetRow = await fetchSheetOrder(row.order_code);
+          if (sheetUpdateMatches(currentSheetRow, { ...row.request_body, code: row.order_code })) {
+            const sourceRevision = Number(currentSheetRow?.revision ?? currentSheetRow?.Revision ?? Number(row.request_body.expected_revision) + 1);
+            if (!Number.isSafeInteger(sourceRevision) || sourceRevision <= Number(row.request_body.expected_revision)) throw new Error("n8n did not confirm the Sheet revision");
+            await getSql()`UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now() WHERE operation_id = ${row.operation_id}`;
+            await getSql()`UPDATE mealfit_orders SET source_revision = ${sourceRevision}, row_data = jsonb_set(row_data, '{revision}', to_jsonb(${sourceRevision}::bigint), true), synced_at = now() WHERE code = ${row.order_code}`;
+            sent++;
+          } else if (!sheetMatchesExpectedState(currentSheetRow, row.request_body)) {
+            throw new AppError(409, "SHEET_REVISION_CONFLICT", "Google Sheet đã thay đổi sau khi thao tác được tạo; dữ liệu Sheet được giữ nguyên.");
+          } else readyBatch.push(row);
+        } catch (error) {
+          await recordFailure(row, error);
         }
       }
-      for (const [index, row] of batch.entries()) {
+      if (!readyBatch.length) continue;
+      let results = null;
+      if (readyBatch.length > 1) {
+        try { results = await pushSheetOrders(readyBatch); }
+        catch (error) {
+          // The old workflow has no batch route; keep its single-order path during rollout.
+          if (error?.upstreamStatus !== 404) results = readyBatch.map(() => ({ error }));
+        }
+      }
+      for (const [index, row] of readyBatch.entries()) {
         try {
           if (results?.[index]?.error) throw results[index].error;
           const result = results ? results[index] : await pushSheetOrder(row.request_body, row.operation_id);
@@ -141,13 +211,7 @@ export async function flushUpstream(batchSize = 20, orderCodes = null) {
           await getSql()`UPDATE mealfit_orders SET source_revision = ${sourceRevision}, row_data = jsonb_set(row_data, '{revision}', to_jsonb(${sourceRevision}::bigint), true), synced_at = now() WHERE code = ${row.order_code}`;
           sent++;
         } catch (error) {
-          if (error?.status === 409) {
-            await getSql()`UPDATE mealfit_upstream_outbox SET status = 'conflict', last_error = 'SHEET_REVISION_CONFLICT', updated_at = now() WHERE operation_id = ${row.operation_id}`;
-            try { await importSheetOrders([await fetchSheetOrder(row.order_code)]); } catch {}
-          } else {
-            const delaySeconds = Math.min(3600, 30 * (2 ** Math.min(Number(row.attempts) || 0, 7)));
-            await getSql()`UPDATE mealfit_upstream_outbox SET status = 'failed', last_error = ${String(error?.code || "UPSTREAM_ERROR")}, next_attempt_at = now() + (${delaySeconds} * interval '1 second'), updated_at = now() WHERE operation_id = ${row.operation_id}`;
-          }
+          await recordFailure(row, error);
         }
       }
     }

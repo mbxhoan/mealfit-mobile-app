@@ -61,6 +61,8 @@ export default handler(async (req, res) => {
   let pages = 0;
   let pendingCount = 0;
   let conflictCount = 0;
+  let resolvedSheetConflicts = 0;
+  let upstreamError = null;
   let stage = "n8n-fetch";
   try {
     const pending = await sql`SELECT outbox.status, count(*)::int AS count
@@ -138,8 +140,9 @@ export default handler(async (req, res) => {
           FROM mealfit_upstream_outbox outbox
           WHERE operation.operation_id = outbox.operation_id AND operation.entity_type = 'order'
             AND outbox.order_code = ANY(${sheetCodes}::text[]) AND outbox.status = 'conflict'`;
-        await sql`UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now()
-          WHERE order_code = ANY(${sheetCodes}::text[]) AND status = 'conflict'`;
+        const resolved = await sql`UPDATE mealfit_upstream_outbox SET status = 'sent', last_error = NULL, updated_at = now()
+          WHERE order_code = ANY(${sheetCodes}::text[]) AND status = 'conflict' RETURNING operation_id`;
+        resolvedSheetConflicts = resolved.length;
         await sql`UPDATE mealfit_conflicts SET status = 'resolved-sheet', resolved_by = ${user.id}, resolved_at = now()
           WHERE order_code = ANY(${sheetCodes}::text[]) AND status = 'open'`;
       }
@@ -156,6 +159,9 @@ export default handler(async (req, res) => {
       }
       stage = "sync-checkpoint";
       await markSheetPull(count, syncKey);
+      stage = "push-outbox";
+      try { await flushUpstream(50, sheetCodes, { forceRetry: true }); }
+      catch (error) { upstreamError = error?.code || "OUTBOX_SYNC_FAILED"; }
     } catch (error) {
       req.apiLogDetail ||= { stage, received, imported: count, pages };
       if (error instanceof AppError) throw error;
@@ -169,7 +175,7 @@ export default handler(async (req, res) => {
     wrapped.cause = error;
     throw wrapped;
   }
-  const currentPending = await sql`SELECT outbox.status, count(*)::int AS count
+  const currentPending = await sql`SELECT outbox.status, count(*)::int AS count, max(outbox.last_error) AS last_error
     FROM mealfit_upstream_outbox AS outbox
     WHERE outbox.status IN ('queued', 'sending', 'failed', 'conflict')
       AND (${user.role !== "shipper"} OR EXISTS (
@@ -182,6 +188,7 @@ export default handler(async (req, res) => {
     GROUP BY outbox.status`;
   pendingCount = currentPending.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
   conflictCount = currentPending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
-  req.apiLogDetail = { stage: "complete", received, imported: count, pages, pendingUpstream: pendingCount, conflicts: conflictCount };
-  send(res, 200, { ok: true, refreshed: true, imported: count, pendingUpstream: pendingCount, conflicts: conflictCount, message: "Đã cập nhật từ Google Sheet." });
+  upstreamError ||= currentPending.find(row => row.last_error)?.last_error || null;
+  req.apiLogDetail = { stage: "complete", received, imported: count, pages, pendingUpstream: pendingCount, conflicts: conflictCount, resolvedSheetConflicts, upstreamError };
+  send(res, 200, { ok: true, refreshed: true, imported: count, pendingUpstream: pendingCount, conflicts: conflictCount, resolvedSheetConflicts, upstreamError, message: "Đã cập nhật từ Google Sheet." });
 });

@@ -27,6 +27,7 @@ export function sheetUpdateMatches(row, body) {
   const rawRevision = row?.revision ?? row?.Revision;
   const sheetRevision = Number(rawRevision);
   return sheetOrderMatchesPayload(row, body)
+    && (body?.method == null || String(row?.["Phương thức thanh toán"] ?? row?.method ?? "") === String(body.method))
     && Number.isSafeInteger(expectedRevision)
     && (rawRevision == null || String(rawRevision).trim() === ""
       || Number.isSafeInteger(sheetRevision) && sheetRevision >= expectedRevision);

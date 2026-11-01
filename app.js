@@ -887,6 +887,8 @@ async function syncQueued() {
   let hasOperations = false;
   let syncFailure = null;
   let webhookPending = 0;
+  const webhookPendingOrders = new Set();
+  let webhookError = null;
   let confirmedOrders = 0;
   const sessionConflicts = new Set();
   try {
@@ -915,6 +917,8 @@ async function syncQueued() {
         }
         const result = await apiRequest("/api/operations", { method: "POST", body: { operations }, timeout: 270_000 });
         webhookPending += Number(result.upstreamPending) || 0;
+        for (const orderId of result.upstreamPendingOrders || []) webhookPendingOrders.add(String(orderId));
+        webhookError ||= result.upstreamError || null;
         const byId = new Map((result.results || []).map(item => [item.id, item]));
         for (const item of batch) {
           const acknowledgement = byId.get(item.id);
@@ -979,7 +983,7 @@ async function syncQueued() {
   const pending = (await getOutbox(user.id)).filter(item => !["done", "conflict"].includes(item.status));
   if (syncFailure) throw syncFailure;
   if (pending.length) throw new Error(`Còn ${pending.length} thay đổi chưa gửi được. Thử đồng bộ lại trước khi tải danh sách đơn.`);
-  return { sessionConflicts: [...sessionConflicts], webhookPending, confirmedOrders };
+  return { sessionConflicts: [...sessionConflicts], webhookPending, webhookPendingOrders: [...webhookPendingOrders], webhookError, confirmedOrders };
 }
 
 async function syncOrderChangeNow(orderId) {
@@ -991,7 +995,8 @@ async function syncOrderChangeNow(orderId) {
   try {
     const queued = (await getOutbox(user.id)).some(item => item.type === "order" && item.entityId === orderId && item.status !== "done");
     if (!queued) throw new Error("Không tìm thấy thay đổi của đơn trong hàng đợi đồng bộ.");
-    try { await syncQueued(); }
+    let syncResult;
+    try { syncResult = await syncQueued(); }
     catch (error) {
       const stillPending = (await getOutbox(user.id)).some(item => item.type === "order" && item.entityId === orderId && item.status !== "done");
       flash(stillPending
@@ -1001,6 +1006,15 @@ async function syncOrderChangeNow(orderId) {
     }
     const pending = (await getOutbox(user.id)).some(item => item.type === "order" && item.entityId === orderId && item.status !== "done");
     if (pending) { flash(`Đã lưu đơn ${orderId} trên thiết bị; vẫn còn trong hàng đợi đồng bộ.`); return; }
+    if (syncResult.webhookPendingOrders.includes(orderId)) {
+      const reason = syncResult.webhookError ? ` (${syncResult.webhookError})` : "";
+      flash(`Đã lưu đơn ${orderId} lên API; đang chờ Sheet xác nhận${reason}.`);
+      return;
+    }
+    if (syncResult.webhookError) {
+      flash(`API đã nhận đơn ${orderId}; chưa xác nhận được trạng thái trên Sheet (${syncResult.webhookError}).`);
+      return;
+    }
     flash(`Đã cập nhật đơn ${orderId} lên API và Sheet.`);
   } catch (error) {
     flash(`Đã lưu đơn ${orderId} trên thiết bị; chưa đồng bộ được: ${error.message}`);
@@ -1077,13 +1091,14 @@ async function pullRemoteOrders({ sheet = false } = {}) {
   if (sheet && sheetSyncRunning) return;
   if (sheet) { sheetSyncRunning = true; render(); }
   let pendingUpstream = 0;
+  let upstreamError = null;
+  let resolvedSheetConflicts = 0;
+  let refreshedConflicts = 0;
   let syncError = null;
   let sessionConflicts = [];
   try {
     if (sheet) {
       const accountsRequest = refreshAccounts().catch(() => {});
-      try { sessionConflicts = (await syncQueued()).sessionConflicts; }
-      catch (error) { if (error.status === 401) throw error; syncError = error; }
       await accountsRequest;
       const cursorKey = `changeCursor:${user.id}`;
       if (await getMeta(cursorKey) == null) {
@@ -1092,6 +1107,16 @@ async function pullRemoteOrders({ sheet = false } = {}) {
       }
       const refreshed = await apiRequest("/api/refresh", { method: "POST", body: {}, timeout: 330_000 });
       pendingUpstream = Number(refreshed.pendingUpstream) || 0;
+      resolvedSheetConflicts = Number(refreshed.resolvedSheetConflicts) || 0;
+      refreshedConflicts = Number(refreshed.conflicts) || 0;
+      upstreamError ||= refreshed.upstreamError || null;
+      try {
+        const queuedSync = await syncQueued();
+        sessionConflicts = queuedSync.sessionConflicts;
+        pendingUpstream = Math.max(pendingUpstream, queuedSync.webhookPending);
+        upstreamError ||= queuedSync.webhookError;
+      }
+      catch (error) { if (error.status === 401) throw error; syncError = error; }
     }
     let cursor = null;
     let first = true;
@@ -1137,6 +1162,7 @@ async function pullRemoteOrders({ sheet = false } = {}) {
     if (role === "admin") {
       try { conflictCount = (await apiRequest("/api/conflicts")).data.length; }
       catch { conflictCount = 0; }
+      refreshedConflicts = Math.max(refreshedConflicts, conflictCount);
     }
     lastSyncFailed = false;
     lastSyncAt = Date.now();
@@ -1149,7 +1175,7 @@ async function pullRemoteOrders({ sheet = false } = {}) {
   } finally {
     if (sheet) { sheetSyncRunning = false; render(); }
   }
-  return { pendingUpstream, syncError, sessionConflicts };
+  return { pendingUpstream, upstreamError, syncError, sessionConflicts, resolvedSheetConflicts, conflicts: refreshedConflicts };
 }
 
 async function pullChanges({ silent = false, allowDuringRefresh = false } = {}) {
@@ -1735,8 +1761,11 @@ app.addEventListener("click", async event => {
       void syncQueuedAppLog();
       if (result.syncError) showError(result.syncError);
       else if (result.sessionConflicts.length) flash("Đã làm mới danh sách đơn. Phiên cũ được giữ trong lịch sử trên thiết bị.");
+      else if (result.resolvedSheetConflicts) flash(`Đã tải dữ liệu Sheet; ${result.resolvedSheetConflicts} cập nhật xung đột đã giữ nguyên dữ liệu trên Sheet.`);
       else if (result.conflicts) flash(`Đã tải dữ liệu từ Sheet · còn ${result.conflicts} xung đột cần Admin xử lý.`);
-      else flash(result.pendingUpstream ? `Đã làm mới từ Sheet · còn ${result.pendingUpstream} cập nhật chưa được webhook xác nhận.` : "Đã làm mới dữ liệu từ Sheet qua webhook n8n.");
+      else if (result.pendingUpstream) flash(`Đã làm mới · ${result.pendingUpstream} cập nhật đã lưu trên API, đang chờ Sheet xác nhận${result.upstreamError ? ` (${result.upstreamError})` : ""}.`);
+      else if (result.upstreamError) flash(`Đã làm mới Sheet; API chưa xác nhận lần đẩy cuối (${result.upstreamError}).`);
+      else flash("Đã làm mới dữ liệu từ Sheet qua webhook n8n.");
     }
     catch (error) { showError(error); }
     finally { setButtonBusy(button, false); }
@@ -1763,8 +1792,11 @@ app.addEventListener("click", async event => {
         void syncQueuedAppLog();
         if (result.syncError) showError(result.syncError);
         else if (result.sessionConflicts.length) flash("Đã làm mới danh sách đơn. Phiên cũ được giữ trong lịch sử trên thiết bị.");
+        else if (result.resolvedSheetConflicts) flash(`Đã tải dữ liệu Sheet; ${result.resolvedSheetConflicts} cập nhật xung đột đã giữ nguyên dữ liệu trên Sheet.`);
         else if (result.conflicts) flash(`Đã tải dữ liệu từ Sheet · còn ${result.conflicts} xung đột cần Admin xử lý.`);
-        else flash(result.pendingUpstream ? `Đã làm mới từ Sheet · còn ${result.pendingUpstream} cập nhật chưa được webhook xác nhận.` : "Đồng bộ từ Sheet qua webhook n8n đã hoàn tất.");
+        else if (result.pendingUpstream) flash(`Đã làm mới · ${result.pendingUpstream} cập nhật đã lưu trên API, đang chờ Sheet xác nhận${result.upstreamError ? ` (${result.upstreamError})` : ""}.`);
+        else if (result.upstreamError) flash(`Đã làm mới Sheet; API chưa xác nhận lần đẩy cuối (${result.upstreamError}).`);
+        else flash("Đồng bộ từ Sheet qua webhook n8n đã hoàn tất.");
       }
     } catch (error) { if (error.status === 401) void logout(); else showError(error); }
     finally { if (detailOrderId) { orderSyncRunningId = null; render(); } }
