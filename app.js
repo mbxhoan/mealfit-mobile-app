@@ -164,7 +164,8 @@ const iconPaths = {
   chevron: '<path d="m9 18 6-6-6-6"/>',
   signal: '<path d="M4 20v-4M9 20v-7M14 20V9M19 20V4"/>',
   activity: '<path d="M4 19V5M4 19h17"/><path d="m7 14 4-4 3 2 5-6"/><circle cx="7" cy="14" r="1"/><circle cx="11" cy="10" r="1"/><circle cx="14" cy="12" r="1"/>',
-  grip: '<circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/>'
+  grip: '<circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="1.5"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>'
 };
 
 function icon(name, size = 20) {
@@ -210,6 +211,20 @@ async function probeNetwork() {
 function mapsButton(link, label = "Mở vị trí trên Google Maps") {
   try { const url = normalizeGoogleMapsLink(link); return url ? `<a class="maps-link-button" href="${safe(url)}" target="_blank" rel="noopener noreferrer" aria-label="${safe(label)}">${icon("mapPin", 18)}</a>` : ""; }
   catch { return ""; }
+}
+
+function copyAddressButton(address, label = "Sao chép địa chỉ") {
+  if (!address) return "";
+  return `<button type="button" class="mini-button copy-address-button" data-action="copy-address" data-address="${safe(address)}" aria-label="${safe(label)}">${icon("copy", 16)}</button>`;
+}
+
+async function copyAddressToClipboard(address) {
+  try {
+    await navigator.clipboard.writeText(address);
+    flash("Đã sao chép địa chỉ.");
+  } catch {
+    flash("Không sao chép được địa chỉ.");
+  }
 }
 
 function statusBadge(status, kind = "delivery") {
@@ -429,7 +444,7 @@ function orderDetailScreen(view) {
   const productLine = item => `<div class="product-line"><span>${safe(item.name)}</span><span class="product-price">${money(item.total ?? item.unitPrice * item.quantity)}</span><small>${safe(item.details || item.weight || "")} · ${item.quantity} phần × ${money(item.unitPrice)}</small></div>`;
   return `<main class="page ${sessionPaused ? "paused" : ""} order-page"><div class="order-meta"><p class="eyebrow">${safe(order.id)} · ${dateLabel(order.date)}</p>${statusBadge(order.deliveryStatus)}</div>
     <div class="detail-card order-detail">
-      <section class="detail-section customer-section"><div class="customer-line"><strong>${safe(order.customer)}</strong><span class="customer-phone">${safe(order.phone || "Chưa có SĐT")}</span></div><div class="customer-address-line"><div class="customer-address">${addressLabel(order.address)}</div>${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}</div>${orderWarning(order)}${customerNoteLine(order)}${order.note ? `<div class="customer-note"><strong>Ghi chú bởi shipper:</strong> ${safe(order.note)}</div>` : ""}${deliveryInfo}</section>
+      <section class="detail-section customer-section"><div class="customer-line"><strong>${safe(order.customer)}</strong><span class="customer-phone">${safe(order.phone || "Chưa có SĐT")}</span></div><div class="customer-address-line"><div class="customer-address">${addressLabel(order.address)}</div>${copyAddressButton(order.address)}${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}</div>${orderWarning(order)}${customerNoteLine(order)}${order.note ? `<div class="customer-note"><strong>Ghi chú bởi shipper:</strong> ${safe(order.note)}</div>` : ""}${deliveryInfo}</section>
       ${items.length ? `<section class="detail-section product-section"><h2>Sản phẩm <span>${items.length}</span></h2>${productLine(items[0])}${items.length > 1 ? `<details class="product-more"><summary><span>Xem thêm ${items.length - 1} món</span><span>Thu gọn</span></summary>${items.slice(1).map(productLine).join("")}</details>` : ""}</section>` : ""}
       <section class="detail-section payment-section"><h2>Thanh toán</h2><div class="detail-row"><span>Tiền hàng · ship</span><span>${money(order.subtotal)} · ${money(order.shippingFee)}</span></div><div class="detail-row total"><span>Tổng đơn</span><span>${money(order.total)}</span></div>${paymentSummary(order)}<button class="button secondary full qr-payment-button" data-action="show-payment-qr" data-id="${safe(order.id)}">${icon("qr", 18)} Hiện QR thanh toán</button></section>
       ${(order.deliveryMethod && order.deliveryMethod !== "Phiên giao hàng") || order.deliveredAt ? `<section class="detail-section delivery-section"><h2>Giao hàng</h2>${order.deliveryMethod && order.deliveryMethod !== "Phiên giao hàng" ? `<div class="detail-row"><span>Hình thức</span><span>${safe(order.deliveryMethod)}</span></div>` : ""}${order.deliveredAt ? `<div class="detail-row"><span>Đã giao lúc</span><span>${timeLabel(order.deliveredAt)} · ${dateLabel(order.deliveredAt)}</span></div>` : ""}</section>` : ""}
@@ -1741,6 +1756,7 @@ app.addEventListener("click", async event => {
   const action = button.dataset.action;
   const id = button.dataset.id;
   if (action === "backdrop" && event.target === button) { clearInterval(retryCountdownTimer); retryCountdownTimer = null; modal = null; render(); return; }
+  if (action === "copy-address") { await copyAddressToClipboard(button.dataset.address || ""); return; }
   if (action === "test-api") {
     if (!setButtonBusy(button, true)) return;
     try {
