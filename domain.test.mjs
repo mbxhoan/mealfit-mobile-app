@@ -143,6 +143,19 @@ test("deliver/pay succeed for an order whose own session isn't the globally acti
   assert.equal(order(delivered, "B").deliveryStatus, "Đã giao hàng");
 });
 
+test("deliver/pay succeed even when a server refresh wiped the order's own sessionId field", () => {
+  const route = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  const staleState = {
+    ...route,
+    orders: route.orders.map(item => item.id === "B" ? { ...item, sessionId: null } : item)
+  };
+
+  const paid = markPaid(staleState, "B", "Tiền mặt", 3000);
+  assert.equal(order(paid, "B").paymentStatus, "Đã thanh toán");
+  const delivered = markDelivered(paid, "B", 4000);
+  assert.equal(order(delivered, "B").deliveryStatus, "Đã giao hàng");
+});
+
 test("deliver/pay still reject a conflicted or non-active session even if it owns the order", () => {
   const sessionB = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
   const sessionA = startSession(createSession(seed(), ["C"], { C: "Sáng" }, 1500), 2000);

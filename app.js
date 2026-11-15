@@ -102,12 +102,12 @@ const currentView = () => viewStack.at(-1);
 const orderById = id => state.orders.find(order => order.id === id);
 const activeSession = () => state.sessions.find(session => session.id === state.activeSessionId && !session.syncConflict && ["notStarted", "active", "paused"].includes(session.status));
 const isStaff = () => role === "admin" || role === "user";
-const orderSession = order => order?.sessionId ? state.sessions.find(item => item.id === order.sessionId) : null;
+const orderSession = order => order ? state.sessions.find(item => ["notStarted", "active", "paused"].includes(item.status) && item.orderIds?.includes(order.id)) : null;
 const canActOnOrder = order => {
   if (!order) return false;
-  if (!order.sessionId) return isStaff();
   const session = orderSession(order);
-  return role === "shipper" && !!session && !session.syncConflict && session.status === "active" && (!session.ownerId || session.ownerId === user?.id);
+  if (!session) return isStaff();
+  return role === "shipper" && !session.syncConflict && session.status === "active" && (!session.ownerId || session.ownerId === user?.id);
 };
 const canSeeOrder = order => role !== "shipper" || (Array.isArray(state.visibleOrderIds)
   ? state.visibleOrderIds.includes(order.id)

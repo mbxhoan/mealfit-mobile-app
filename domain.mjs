@@ -146,7 +146,7 @@ const updateOrder = (state, orderId, update) => ({
 
 const getOrder = (state, orderId) => state.orders.find(order => order.id === orderId);
 const getActiveSession = state => state.sessions.find(session => session.id === state.activeSessionId && OPEN_SESSION_STATUSES.includes(session.status));
-const getOrderSession = (state, order) => order.sessionId ? state.sessions.find(item => item.id === order.sessionId) : null;
+const getOrderSession = (state, order) => state.sessions.find(item => OPEN_SESSION_STATUSES.includes(item.status) && item.orderIds?.includes(order.id));
 const validShift = shift => shift == null || SHIFT_OPTIONS.includes(shift);
 
 export function setOrderNote(state, orderId, note) {
@@ -210,12 +210,9 @@ export function markPaid(state, orderId, method, paidAt = Date.now()) {
   if (!PAYMENT_METHODS.includes(method)) throw new Error("Vui lòng chọn phương thức thanh toán.");
   const order = getOrder(state, orderId);
   if (!order || order.paymentStatus === "Đã thanh toán" || (dueAmount(order) === 0 && order.paymentStatus !== "Chưa thanh toán")) throw new Error("Đơn hàng không còn khoản cần thu.");
-  let sessionId = null;
-  if (order.sessionId) {
-    const session = getOrderSession(state, order);
-    if (!session || session.syncConflict || session.status !== "active" || !session.orderIds.includes(orderId)) throw new Error("Phiên đang tạm dừng hoặc không còn hoạt động.");
-    sessionId = session.id;
-  }
+  const session = getOrderSession(state, order);
+  if (session && (session.syncConflict || session.status !== "active")) throw new Error("Phiên đang tạm dừng hoặc không còn hoạt động.");
+  const sessionId = session ? session.id : null;
   const amount = dueAmount(order);
   return updateOrder(state, orderId, current => ({
     ...current,
@@ -430,10 +427,9 @@ export function markDelivered(state, orderId, deliveredAt = Date.now()) {
   const order = getOrder(state, orderId);
   if (!order || order.deliveryStatus !== "Đang giao hàng") throw new Error("Đơn hàng không ở trạng thái đang giao.");
   const session = getOrderSession(state, order);
-  if (order.sessionId && (!session || session.syncConflict || session.status !== "active")) throw new Error("Tiếp tục phiên giao hàng trước khi xác nhận.");
-  if (order.sessionId && !session.orderIds.includes(orderId)) throw new Error("Đơn hàng không còn trong phiên giao hàng này.");
+  if (session && (session.syncConflict || session.status !== "active")) throw new Error("Tiếp tục phiên giao hàng trước khi xác nhận.");
   let next = updateOrder(state, orderId, current => ({ ...current, deliveryStatus: "Đã giao hàng", deliveredAt }));
-  if (!session || !order.sessionId) return next;
+  if (!session) return next;
   const previousCompletedAt = Math.max(0, ...Object.values(session.legs).map(leg => leg.completedAt || 0));
   const startedAt = session.stopStarts[orderId] ?? (previousCompletedAt || session.startedAt);
   if (!startedAt) throw new Error("Bắt đầu phiên trước khi xác nhận điểm giao.");
