@@ -146,6 +146,7 @@ const updateOrder = (state, orderId, update) => ({
 
 const getOrder = (state, orderId) => state.orders.find(order => order.id === orderId);
 const getActiveSession = state => state.sessions.find(session => session.id === state.activeSessionId && OPEN_SESSION_STATUSES.includes(session.status));
+const getOrderSession = (state, order) => order.sessionId ? state.sessions.find(item => item.id === order.sessionId) : null;
 const validShift = shift => shift == null || SHIFT_OPTIONS.includes(shift);
 
 export function setOrderNote(state, orderId, note) {
@@ -211,8 +212,8 @@ export function markPaid(state, orderId, method, paidAt = Date.now()) {
   if (!order || order.paymentStatus === "Đã thanh toán" || (dueAmount(order) === 0 && order.paymentStatus !== "Chưa thanh toán")) throw new Error("Đơn hàng không còn khoản cần thu.");
   let sessionId = null;
   if (order.sessionId) {
-    const session = getActiveSession(state);
-    if (!session || session.id !== order.sessionId || session.status !== "active" || !session.orderIds.includes(orderId)) throw new Error("Phiên đang tạm dừng hoặc không còn hoạt động.");
+    const session = getOrderSession(state, order);
+    if (!session || session.syncConflict || session.status !== "active" || !session.orderIds.includes(orderId)) throw new Error("Phiên đang tạm dừng hoặc không còn hoạt động.");
     sessionId = session.id;
   }
   const amount = dueAmount(order);
@@ -428,8 +429,8 @@ export function moveOrderInSession(state, orderId, offset) {
 export function markDelivered(state, orderId, deliveredAt = Date.now()) {
   const order = getOrder(state, orderId);
   if (!order || order.deliveryStatus !== "Đang giao hàng") throw new Error("Đơn hàng không ở trạng thái đang giao.");
-  const session = getActiveSession(state);
-  if (order.sessionId && (!session || session.id !== order.sessionId || session.status !== "active")) throw new Error("Tiếp tục phiên giao hàng trước khi xác nhận.");
+  const session = getOrderSession(state, order);
+  if (order.sessionId && (!session || session.syncConflict || session.status !== "active")) throw new Error("Tiếp tục phiên giao hàng trước khi xác nhận.");
   if (order.sessionId && !session.orderIds.includes(orderId)) throw new Error("Đơn hàng không còn trong phiên giao hàng này.");
   let next = updateOrder(state, orderId, current => ({ ...current, deliveryStatus: "Đã giao hàng", deliveredAt }));
   if (!session || !order.sessionId) return next;

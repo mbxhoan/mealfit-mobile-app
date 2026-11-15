@@ -102,6 +102,13 @@ const currentView = () => viewStack.at(-1);
 const orderById = id => state.orders.find(order => order.id === id);
 const activeSession = () => state.sessions.find(session => session.id === state.activeSessionId && !session.syncConflict && ["notStarted", "active", "paused"].includes(session.status));
 const isStaff = () => role === "admin" || role === "user";
+const orderSession = order => order?.sessionId ? state.sessions.find(item => item.id === order.sessionId) : null;
+const canActOnOrder = order => {
+  if (!order) return false;
+  if (!order.sessionId) return isStaff();
+  const session = orderSession(order);
+  return role === "shipper" && !!session && !session.syncConflict && session.status === "active" && (!session.ownerId || session.ownerId === user?.id);
+};
 const canSeeOrder = order => role !== "shipper" || (Array.isArray(state.visibleOrderIds)
   ? state.visibleOrderIds.includes(order.id)
   : !order.assignedUserId || order.assignedUserId === user?.id);
@@ -1580,8 +1587,7 @@ function setButtonBusy(button, busy) {
 
 async function deliverOrder(orderId) {
   const order = orderById(orderId);
-  const session = order?.sessionId ? activeSession() : null;
-  if (!order || (order.sessionId ? role !== "shipper" || session?.id !== order.sessionId || session.status !== "active" : !isStaff())) { flash("Tài khoản này không có quyền cập nhật đơn hàng."); return; }
+  if (!canActOnOrder(order)) { flash("Tài khoản này không có quyền cập nhật đơn hàng."); return; }
   if (!order || order.deliveryStatus !== "Đang giao hàng") { flash("Đơn hàng không còn ở trạng thái đang giao."); return; }
   if (dueAmount(order) > 0) {
     modal = { type: "deliver-unpaid", orderId };
@@ -1598,8 +1604,7 @@ async function deliverOrder(orderId) {
 
 function openPayment(orderId) {
   const order = orderById(orderId);
-  const session = order?.sessionId ? activeSession() : null;
-  if (!order || (order.sessionId ? role !== "shipper" || session?.id !== order.sessionId || session.status !== "active" : !isStaff())) { flash("Tài khoản này không có quyền cập nhật thanh toán."); return; }
+  if (!canActOnOrder(order)) { flash("Tài khoản này không có quyền cập nhật thanh toán."); return; }
   if (!order || dueAmount(order) <= 0) { flash("Đơn hàng không còn khoản cần thu."); return; }
   modal = { type: "payment", orderId, method: null };
   render();
@@ -2078,8 +2083,7 @@ app.addEventListener("click", async event => {
   if (action === "confirm-payment") {
     if (modal?.method === "Chuyển khoản") { modal = { type: "payment-qr", orderId: modal.orderId, confirmPayment: true }; render(); return; }
     const order = modal && orderById(modal.orderId);
-    const session = order?.sessionId ? activeSession() : null;
-    if (!role || !order || (order.sessionId ? role !== "shipper" || session?.id !== order.sessionId || session.status !== "active" : !isStaff())) { modal = null; render(); flash("Tài khoản này không có quyền cập nhật thanh toán."); return; }
+    if (!canActOnOrder(order)) { modal = null; render(); flash("Tài khoản này không có quyền cập nhật thanh toán."); return; }
     try {
       const next = markPaid(state, modal.orderId, modal.method);
       modal = null;
@@ -2090,8 +2094,7 @@ app.addEventListener("click", async event => {
   if (action === "back-to-payment") { modal = { type: "payment", orderId: modal.orderId, method: "Chuyển khoản" }; render(); return; }
   if (action === "confirm-transfer-payment") {
     const order = modal && orderById(modal.orderId);
-    const session = order?.sessionId ? activeSession() : null;
-    if (!role || !order || (order.sessionId ? role !== "shipper" || session?.id !== order.sessionId || session.status !== "active" : !isStaff())) { modal = null; render(); flash("Tài khoản này không có quyền cập nhật thanh toán."); return; }
+    if (!canActOnOrder(order)) { modal = null; render(); flash("Tài khoản này không có quyền cập nhật thanh toán."); return; }
     try {
       const next = markPaid(state, modal.orderId, "Chuyển khoản");
       modal = null;
@@ -2123,8 +2126,7 @@ app.addEventListener("click", async event => {
   if (action === "confirm-delivery-unpaid") {
     const orderId = modal.orderId;
     const order = orderById(orderId);
-    const session = order?.sessionId ? activeSession() : null;
-    if (!order || (order.sessionId ? role !== "shipper" || session?.id !== order.sessionId || session.status !== "active" : !isStaff())) { modal = null; render(); flash("Tài khoản này không có quyền cập nhật đơn hàng."); return; }
+    if (!canActOnOrder(order)) { modal = null; render(); flash("Tài khoản này không có quyền cập nhật đơn hàng."); return; }
     try {
       const next = markDelivered(state, orderId);
       if (!next.activeSessionId && order.sessionId) showSessionHistory(order.sessionId);

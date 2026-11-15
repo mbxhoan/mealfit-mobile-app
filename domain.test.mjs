@@ -126,6 +126,41 @@ test("payment records only the remainder and tags collections made in an active 
   assert.equal(order(route, "B").payments.at(-1).sessionId, session(route).id);
 });
 
+test("deliver/pay succeed for an order whose own session isn't the globally active one", () => {
+  const sessionB = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  const sessionA = startSession(createSession(seed(), ["C"], { C: "Sáng" }, 1500), 2000);
+  const ordersById = Object.fromEntries(sessionB.orders.map(item => [item.id, item]));
+  ordersById.C = sessionA.orders.find(item => item.id === "C");
+  const merged = {
+    activeSessionId: sessionA.sessions[0].id,
+    sessions: [sessionA.sessions[0], sessionB.sessions[0]],
+    orders: Object.values(ordersById)
+  };
+
+  const paid = markPaid(merged, "B", "Tiền mặt", 3000);
+  assert.equal(order(paid, "B").paymentStatus, "Đã thanh toán");
+  const delivered = markDelivered(paid, "B", 4000);
+  assert.equal(order(delivered, "B").deliveryStatus, "Đã giao hàng");
+});
+
+test("deliver/pay still reject a conflicted or non-active session even if it owns the order", () => {
+  const sessionB = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  const sessionA = startSession(createSession(seed(), ["C"], { C: "Sáng" }, 1500), 2000);
+  const ordersById = Object.fromEntries(sessionB.orders.map(item => [item.id, item]));
+  ordersById.C = sessionA.orders.find(item => item.id === "C");
+  const conflicted = {
+    activeSessionId: sessionA.sessions[0].id,
+    sessions: [sessionA.sessions[0], { ...sessionB.sessions[0], syncConflict: true }],
+    orders: Object.values(ordersById)
+  };
+  assert.throws(() => markPaid(conflicted, "B", "Tiền mặt", 3000));
+  assert.throws(() => markDelivered(conflicted, "B", 4000));
+
+  const paused = { ...conflicted, sessions: conflicted.sessions.map(item => item.id === sessionB.sessions[0].id ? { ...item, syncConflict: false, status: "paused" } : item) };
+  assert.throws(() => markPaid(paused, "B", "Tiền mặt", 3000));
+  assert.throws(() => markDelivered(paused, "B", 4000));
+});
+
 test("payment sync records the collected remainder instead of the order value", () => {
   const unpaid = {
     id: "DH0924", total: 658_000, paidAmount: 0, remainingDue: 563_050,
