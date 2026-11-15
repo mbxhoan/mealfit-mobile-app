@@ -109,23 +109,38 @@ function sortPendingByShift(orderIds, shifts, legs) {
   return [...completed, ...pending.sort((a, b) => shiftRank(shifts[a]) - shiftRank(shifts[b]))];
 }
 
+const TERMINAL_DELIVERY_STATUSES = ["Đã giao hàng", "Đã huỷ đơn"];
+
 export function normalizeState(state) {
   const orders = state.orders.map(order => {
     if (order.paymentStatus !== "Chưa thanh toán" || Number(order.remainingDue) > 0) return order;
     const remainingDue = dueAmount(order);
     return { ...order, paidAmount: Math.max(0, Number(order.total) || 0) - remainingDue, remainingDue };
   });
+  const orderById = new Map(orders.map(order => [order.id, order]));
   const sessions = state.sessions.map(session => {
     const status = ["notStarted", "active", "paused", "completed", "cancelled"].includes(session.status)
       ? session.status
       : session.status === "completed" ? "completed" : session.startedAt ? "active" : "notStarted";
+    const orderIds = Array.isArray(session.orderIds) ? session.orderIds : [];
+    const legs = { ...(session.legs || {}) };
+    // An order can reach a terminal status outside this session's own flow (e.g. edited directly on the Sheet).
+    // Without a backfilled leg it would render as a pending stop forever, since the stop only ever completes
+    // through markDelivered's own leg bookkeeping, and that action correctly refuses an order that is already done.
+    for (const id of orderIds) {
+      if (legs[id]?.completedAt) continue;
+      const order = orderById.get(id);
+      if (!order || !TERMINAL_DELIVERY_STATUSES.includes(order.deliveryStatus)) continue;
+      const completedAt = order.deliveredAt || session.startedAt || Date.now();
+      legs[id] = { startedAt: completedAt, completedAt, durationMs: 0 };
+    }
     const normalized = {
       ...session,
       status,
       createdAt: session.createdAt ?? session.startedAt ?? null,
-      orderIds: Array.isArray(session.orderIds) ? session.orderIds : [],
+      orderIds,
       shifts: session.shifts || {},
-      legs: session.legs || {},
+      legs,
       stopStarts: session.stopStarts || {},
       pauseIntervals: session.pauseIntervals || [],
       pausedAt: session.pausedAt ?? null,

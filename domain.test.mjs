@@ -543,6 +543,22 @@ test("legacy sessions normalize without discarding orders or route progress", ()
   assert.equal(setSessionOrderShift(unstarted, "A", "Sáng").sessions[0].shifts.A, "Sáng");
 });
 
+test("normalizing backfills a session leg for an order completed outside the app's own flow", () => {
+  const route = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  const externallyCompleted = {
+    ...route,
+    orders: route.orders.map(item => item.id === "B" ? { ...item, deliveryStatus: "Đã giao hàng", paymentStatus: "Đã thanh toán", remainingDue: 0 } : item)
+  };
+  assert.equal(externallyCompleted.sessions[0].legs.B, undefined);
+
+  const normalized = normalizeState(externallyCompleted);
+  assert.ok(normalized.sessions[0].legs.B?.completedAt);
+  assert.throws(() => markDelivered(normalized, "B", 5000), /Đơn hàng không ở trạng thái đang giao/);
+
+  const untouched = normalizeState(route);
+  assert.equal(untouched.sessions[0].legs.B, undefined);
+});
+
 test("photo selection never allows more than five saved photos per order", () => {
   assert.equal(allowedPhotoCount(0, 8), 5);
   assert.equal(allowedPhotoCount(4, 3), 1);
