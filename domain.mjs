@@ -111,41 +111,18 @@ function sortPendingByShift(orderIds, shifts, legs) {
 
 const TERMINAL_DELIVERY_STATUSES = ["Đã giao hàng", "Đã huỷ đơn"];
 
-// Legs can be backfilled from order statuses that arrive from the server/Sheet, which bypasses markDelivered's own
-// completion step. Closing the session here keeps every device deriving the same status from the same data.
-function closeFinishedSession(session) {
-  if (session.syncConflict || !["active", "paused"].includes(session.status) || !session.orderIds.length) return session;
-  if (!session.orderIds.every(id => session.legs[id]?.completedAt)) return session;
-  const completedAt = Math.max(...session.orderIds.map(id => session.legs[id].completedAt));
-  const pauseIntervals = session.status === "paused" && session.pausedAt
-    ? [...session.pauseIntervals, { startedAt: session.pausedAt, resumedAt: Math.max(completedAt, session.pausedAt) }]
-    : session.pauseIntervals;
-  return { ...session, status: "completed", pausedAt: null, pauseIntervals, completedAt: session.completedAt ?? completedAt };
-}
-
 export function normalizeState(state) {
   const orders = state.orders.map(order => {
     if (order.paymentStatus !== "Chưa thanh toán" || Number(order.remainingDue) > 0) return order;
     const remainingDue = dueAmount(order);
     return { ...order, paidAmount: Math.max(0, Number(order.total) || 0) - remainingDue, remainingDue };
   });
-  const orderById = new Map(orders.map(order => [order.id, order]));
   const sessions = state.sessions.map(session => {
     const status = ["notStarted", "active", "paused", "completed", "cancelled"].includes(session.status)
       ? session.status
       : session.status === "completed" ? "completed" : session.startedAt ? "active" : "notStarted";
     const orderIds = Array.isArray(session.orderIds) ? session.orderIds : [];
     const legs = { ...(session.legs || {}) };
-    // An order can reach a terminal status outside this session's own flow (e.g. edited directly on the Sheet).
-    // Without a backfilled leg it would render as a pending stop forever, since the stop only ever completes
-    // through markDelivered's own leg bookkeeping, and that action correctly refuses an order that is already done.
-    for (const id of orderIds) {
-      if (legs[id]?.completedAt) continue;
-      const order = orderById.get(id);
-      if (!order || !TERMINAL_DELIVERY_STATUSES.includes(order.deliveryStatus)) continue;
-      const completedAt = order.deliveredAt || session.startedAt || Date.now();
-      legs[id] = { startedAt: completedAt, completedAt, durationMs: 0 };
-    }
     const normalized = {
       ...session,
       status,
@@ -159,10 +136,10 @@ export function normalizeState(state) {
       completedAt: session.completedAt ?? null
     };
     normalized.orderIds = sortPendingByShift(normalized.orderIds, normalized.shifts, normalized.legs);
-    return closeFinishedSession(normalized);
+    return normalized;
   });
-  const active = sessions.find(session => session.id === state.activeSessionId && !session.syncConflict && OPEN_SESSION_STATUSES.includes(session.status))
-    || sessions.find(session => !session.syncConflict && OPEN_SESSION_STATUSES.includes(session.status));
+  const active = sessions.find(session => session.id === state.activeSessionId && OPEN_SESSION_STATUSES.includes(session.status))
+    || sessions.find(session => OPEN_SESSION_STATUSES.includes(session.status));
   return { ...state, orders, sessions, activeSessionId: active?.id ?? null };
 }
 
@@ -210,7 +187,7 @@ function appendPause(session, resumedAt) {
   return [...session.pauseIntervals, { startedAt: session.pausedAt, resumedAt }];
 }
 
-function activeDuration(startedAt, completedAt, intervals = []) {
+export function activeDuration(startedAt, completedAt, intervals = []) {
   const pausedMs = intervals.reduce((sum, interval) => {
     const start = Math.max(startedAt, interval.startedAt);
     const end = Math.min(completedAt, interval.resumedAt ?? completedAt);
@@ -238,7 +215,7 @@ export function markPaid(state, orderId, method, paidAt = Date.now()) {
   const order = getOrder(state, orderId);
   if (!order || order.paymentStatus === "Đã thanh toán" || (dueAmount(order) === 0 && order.paymentStatus !== "Chưa thanh toán")) throw new Error("Đơn hàng không còn khoản cần thu.");
   const session = getOrderSession(state, order);
-  if (session && (session.syncConflict || session.status !== "active")) throw new Error("Phiên đang tạm dừng hoặc không còn hoạt động.");
+  if (session && session.status !== "active") throw new Error("Phiên đang tạm dừng hoặc không còn hoạt động.");
   const sessionId = session ? session.id : null;
   const amount = dueAmount(order);
   return updateOrder(state, orderId, current => ({
@@ -333,8 +310,9 @@ export function cancelSession(state, cancelledAt = Date.now()) {
     ...state,
     activeSessionId: null,
     sessions: state.sessions.map(item => item.id === session.id ? { ...item, status: "cancelled", pausedAt: null, pauseIntervals: intervals, completedAt: cancelledAt } : item),
-    orders: state.orders.map(order => order.sessionId === session.id && order.deliveryStatus !== "Đã giao hàng"
-      ? { ...order, deliveryStatus: "Chưa giao hàng", deliveryMethod: null, sessionId: null }
+    // Release only orders that are still open: delivered or cancelled orders keep their status and history.
+    orders: state.orders.map(order => (order.sessionId === session.id || session.orderIds.includes(order.id)) && !TERMINAL_DELIVERY_STATUSES.includes(order.deliveryStatus)
+      ? { ...order, deliveryStatus: "Chưa giao hàng", deliveryMethod: null, sessionId: null, deliveredAt: null }
       : order)
   };
 }
@@ -354,20 +332,6 @@ export function completeSession(state, sessionId, completedAt = Date.now()) {
     sessions: state.sessions.map(item => item.id === sessionId
       ? { ...item, status: "completed", pausedAt: null, pauseIntervals: intervals, completedAt: item.completedAt ?? doneAt }
       : item)
-  };
-}
-
-export function restoreConflictedSession(state, sessionId, userId) {
-  const session = state.sessions.find(item => item.id === sessionId);
-  if (!session) throw new Error("Không tìm thấy phiên giao hàng đã lưu trên thiết bị.");
-  if (!session.syncConflict) throw new Error("Phiên không cần khôi phục.");
-  if (session.ownerId && session.ownerId !== userId) throw new Error("Phiên này thuộc tài khoản shipper khác.");
-  const anotherActiveSession = state.sessions.find(item => item.id !== sessionId && !item.syncConflict && OPEN_SESSION_STATUSES.includes(item.status));
-  if (anotherActiveSession) throw new Error("Hoàn tất phiên hiện tại trước khi khôi phục phiên khác.");
-  return {
-    ...state,
-    activeSessionId: sessionId,
-    sessions: state.sessions.map(item => item.id === sessionId ? { ...item, syncConflict: false } : item)
   };
 }
 
@@ -472,7 +436,7 @@ export function markDelivered(state, orderId, deliveredAt = Date.now()) {
   const order = getOrder(state, orderId);
   if (!order || order.deliveryStatus !== "Đang giao hàng") throw new Error("Đơn hàng không ở trạng thái đang giao.");
   const session = getOrderSession(state, order);
-  if (session && (session.syncConflict || session.status !== "active")) throw new Error("Tiếp tục phiên giao hàng trước khi xác nhận.");
+  if (session && session.status !== "active") throw new Error("Tiếp tục phiên giao hàng trước khi xác nhận.");
   let next = updateOrder(state, orderId, current => ({ ...current, deliveryStatus: "Đã giao hàng", deliveredAt }));
   if (!session) return next;
   const previousCompletedAt = Math.max(0, ...Object.values(session.legs).map(leg => leg.completedAt || 0));

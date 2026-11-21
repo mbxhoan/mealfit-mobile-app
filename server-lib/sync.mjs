@@ -33,25 +33,18 @@ export function sheetUpdateMatches(row, body) {
       || Number.isSafeInteger(sheetRevision) && sheetRevision >= expectedRevision);
 }
 
-export function sheetUpdateMismatches(updates, rows) {
-  const latest = new Map();
-  for (const update of updates) {
-    const code = String(update.order_code || update.code || "").trim();
-    if (!code) continue;
-    const current = latest.get(code);
-    if (!current || Number(update.target_revision) > Number(current.target_revision)) latest.set(code, update);
-  }
-  const sheetOrders = new Map(rows.map(row => [String(row?.["Mã đơn"] || row?.code || "").trim(), row]));
-  return [...latest].filter(([code, update]) => {
-    const row = sheetOrders.get(code);
-    return !sheetUpdateMatches(row, { ...(update.request_body || {}), code });
-  }).map(([code]) => code);
+// Database clock as an exact UTC ISO string; take it before reading the Sheet and pass it as `fetchStartedAt`.
+export async function dbClock(sql = getSql()) {
+  const rows = await sql`SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS now`;
+  return rows[0].now;
 }
 
-export async function importSheetOrders(rows, { allowOutboxConflicts = false, allowOpenConflicts = false, sheetAuthoritative = false } = {}) {
+// fetchStartedAt: DB clock reading taken BEFORE the Sheet was read. An order whose outbox row changed at or after that
+// moment was written by the app while this (possibly stale) Sheet snapshot was in flight, so the snapshot must not win.
+// Orders with an unsent outbox row are never overwritten, even by a Sheet-authoritative pull.
+export async function importSheetOrders(rows, { allowOutboxConflicts = false, allowOpenConflicts = false, sheetAuthoritative = false, fetchStartedAt = null, sql = getSql() } = {}) {
   const orders = rows.map(row => normalizeSheetOrder(row)).filter(Boolean);
   if (!orders.length) return 0;
-  const sql = getSql();
   const accounts = await sql`SELECT id, name, aliases FROM mealfit_accounts WHERE role = 'shipper'`;
   const shipperIds = new Map(accounts.flatMap(account => [account.name, ...(account.aliases || [])]
     .map(name => [sheetText(name).toLocaleLowerCase("vi-VN"), account.id])));
@@ -120,6 +113,7 @@ export async function importSheetOrders(rows, { allowOutboxConflicts = false, al
       payment_status text, shipping_status text, shipper_name text, assigned_user_id text,
       note text, items jsonb, source_revision bigint
     )
+    ORDER BY code
     ON CONFLICT (code) DO UPDATE SET
       row_data = EXCLUDED.row_data,
       customer = EXCLUDED.customer,
@@ -167,8 +161,9 @@ export async function importSheetOrders(rows, { allowOutboxConflicts = false, al
       )))
       AND NOT EXISTS (SELECT 1 FROM mealfit_upstream_outbox queued
         WHERE queued.order_code = mealfit_orders.code
-          AND NOT ${sheetAuthoritative}
-          AND (queued.status IN ('queued', 'sending', 'failed') OR (${!allowOutboxConflicts} AND queued.status = 'conflict')))
+          AND (queued.status IN ('queued', 'sending', 'failed')
+            OR (${!sheetAuthoritative && !allowOutboxConflicts} AND queued.status = 'conflict')
+            OR (${fetchStartedAt !== null} AND queued.status = 'sent' AND queued.updated_at >= ${fetchStartedAt}::timestamptz)))
       AND (${sheetAuthoritative} OR ${allowOpenConflicts} OR NOT EXISTS (SELECT 1 FROM mealfit_conflicts conflict
         WHERE conflict.order_code = mealfit_orders.code AND conflict.status = 'open'))
     RETURNING code
@@ -190,13 +185,14 @@ export async function markSheetPull(imported, key = "last-sheet-pull") {
 }
 
 export function orderFromRow(row) {
-  const raw = row.row_data || {};
+  // The primary key is authoritative even when the stored Sheet row lacks its code column.
+  const raw = { ...(row.row_data || {}), "Mã đơn": (row.row_data || {})["Mã đơn"] || row.code };
   const order = normalizeSheetOrder(raw, {
     mapsLink: row.maps_url,
     sessionId: row.session_id,
     payments: row.payments,
     serverRevision: row.revision,
-    deliveredAt: raw.deliveredAt
+    deliveredAt: row.delivered_at ? new Date(row.delivered_at).valueOf() : raw.deliveredAt
   });
   if (!order) return null;
   return {
@@ -218,6 +214,7 @@ export function orderFromRow(row) {
     items: Array.isArray(row.items) ? row.items : [],
     mapsLink: row.maps_url,
     sessionId: row.session_id,
+    deliveryMethod: row.delivery_method ?? null,
     payments: row.payments || [],
     serverRevision: Number(row.revision),
     sourceRevision: Number(row.source_revision)

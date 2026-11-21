@@ -4,9 +4,19 @@ import { assertSameOrigin, requireUser } from "../server-lib/auth.mjs";
 import { sheetShipperNames } from "../server-lib/accounts.mjs";
 import { getSql } from "../server-lib/db.mjs";
 import { fetchSheetOrders, fetchSheetOrdersForShippers } from "../server-lib/n8n.mjs";
-import { importSheetOrders, markSheetPull, sheetUpdateMismatches } from "../server-lib/sync.mjs";
+import { dbClock, importSheetOrders, markSheetPull } from "../server-lib/sync.mjs";
 import { sheetText } from "../server-lib/orders.mjs";
-import { flushUpstream, reconcileUpstreamWithSheet } from "../server-lib/upstream.mjs";
+import { flushUpstream } from "../server-lib/upstream.mjs";
+import { reconcileAccounts } from "../server-lib/commands.mjs";
+
+const MIN_PULL_INTERVAL_MS = 20_000;
+
+// A Sheet import can finish or orphan a delivery session (e.g. an order delivered directly on the Sheet), so the
+// invariants are repaired for the affected shipper accounts right after it. Never fails the sync itself.
+async function repairSessions(ownerIds) {
+  try { return (await reconcileAccounts(ownerIds)).filter(report => report.changed).length; }
+  catch (error) { console.error(JSON.stringify({ code: "RECONCILE_FAILED", message: String(error?.message || "").slice(0, 200) })); return 0; }
+}
 
 const TABLES = ["mealfit_accounts", "mealfit_orders", "mealfit_sessions", "mealfit_operations", "mealfit_payment_events", "mealfit_upstream_outbox", "mealfit_media", "mealfit_conflicts", "mealfit_audit_log", "mealfit_auth_attempts", "mealfit_sync_meta"];
 
@@ -20,18 +30,18 @@ async function runMaintenance(req, res) {
     const modifiedSince = meta[0]?.updated_at ? new Date(new Date(meta[0].updated_at).valueOf() - 120_000).toISOString() : "";
     let cursor = "";
     let complete = false;
-    const importedRows = [];
     for (let page = 0; page < 100; page++) {
+      const fetchStartedAt = await dbClock();
       const result = await fetchSheetOrders({ cursor, limit: 500, modifiedSince });
-      sync.imported += await importSheetOrders(result.rows);
-      importedRows.push(...result.rows);
+      sync.imported += await importSheetOrders(result.rows, { fetchStartedAt });
       if (!result.nextCursor) { complete = true; break; }
       cursor = result.nextCursor;
     }
     if (!complete) throw new AppError(413, "SHEET_PAGE_LIMIT", "Vượt giới hạn phân trang đồng bộ.");
-    await reconcileUpstreamWithSheet(importedRows);
     await markSheetPull(sync.imported);
     sync.pushed = await flushUpstream();
+    const shippers = await getSql()`SELECT id FROM mealfit_accounts WHERE role = 'shipper'`;
+    sync.repaired = await repairSessions(shippers.map(row => row.id));
   } catch (error) {
     sync.error = error?.code || "UPSTREAM_ERROR";
   }
@@ -55,7 +65,12 @@ export default handler(async (req, res) => {
   const sql = getSql();
   const syncKey = user.role === "shipper" ? `last-sheet-pull:${user.id}` : "last-sheet-pull";
   const meta = await sql`SELECT updated_at FROM mealfit_sync_meta WHERE key = ${syncKey} LIMIT 1`;
-  const previousPullAt = meta[0]?.updated_at ? new Date(meta[0].updated_at).toISOString() : null;
+  const previousPullAt = meta[0]?.updated_at ? new Date(meta[0].updated_at).valueOf() : null;
+  // n8n serialises every request at 2.5s, so a pull started right after another would only queue behind it.
+  if (previousPullAt !== null && Date.now() - previousPullAt < MIN_PULL_INTERVAL_MS) {
+    send(res, 200, { ok: true, refreshed: false, throttled: true, imported: 0, pendingUpstream: 0, conflicts: 0, resolvedSheetConflicts: 0, upstreamError: null, message: "Dữ liệu vừa được cập nhật từ Google Sheet." });
+    return;
+  }
   let count = 0;
   let received = 0;
   let pages = 0;
@@ -83,7 +98,8 @@ export default handler(async (req, res) => {
       if (user.role === "shipper" && !shipperNames.length) throw new AppError(400, "SHIPPER_NAME_REQUIRED", "Tài khoản shipper chưa có tên để lọc đơn hàng.");
       stage = "n8n-fetch";
       // Fetch current and legacy shipper names; verify missing delivered statuses against the unfiltered Sheet view.
-      const verificationCutoff = new Date().toISOString();
+      // The DB clock is read before the Sheet so that app writes landing during the fetch are never overwritten by it.
+      const fetchStartedAt = await dbClock(sql);
       const pull = await fetchSheetOrdersForShippers({ shippers: shipperNames, limit: 500 });
       const allowedShippers = user.role === "shipper"
         ? new Set(shipperNames.map(name => sheetText(name).toLocaleLowerCase("vi-VN")))
@@ -100,7 +116,6 @@ export default handler(async (req, res) => {
         pages += completePull.pages;
       }
       received = rows.length;
-      await reconcileUpstreamWithSheet(rows);
       const reconciledPending = await sql`SELECT outbox.status, count(*)::int AS count
           FROM mealfit_upstream_outbox AS outbox
           WHERE outbox.status IN ('queued', 'sending', 'failed', 'conflict')
@@ -114,25 +129,11 @@ export default handler(async (req, res) => {
           GROUP BY outbox.status`;
       pendingCount = reconciledPending.filter(row => row.status !== "conflict").reduce((sum, row) => sum + Number(row.count), 0);
       conflictCount = reconciledPending.filter(row => row.status === "conflict").reduce((sum, row) => sum + Number(row.count), 0);
-      stage = "sheet-verification";
-      const sentUpdates = await sql`SELECT DISTINCT ON (outbox.order_code)
-          outbox.order_code, outbox.request_body, outbox.target_revision
-        FROM mealfit_upstream_outbox AS outbox
-        JOIN mealfit_operations AS operation ON operation.operation_id = outbox.operation_id AND operation.entity_type = 'order'
-        WHERE outbox.status = 'sent'
-          AND (${previousPullAt === null} OR outbox.updated_at > ${previousPullAt}::timestamptz)
-          AND outbox.updated_at <= ${verificationCutoff}::timestamptz
-          AND (${user.role !== "shipper"} OR operation.actor_id = ${user.id})
-        ORDER BY outbox.order_code, outbox.target_revision DESC, outbox.updated_at DESC`;
-      const mismatches = sheetUpdateMismatches(sentUpdates, rows);
-      if (mismatches.length) {
-        req.apiLogDetail = { stage, mismatches: mismatches.length, codes: mismatches.slice(0, 5) };
-        await sql`UPDATE mealfit_upstream_outbox SET status = 'conflict', last_error = 'SHEET_STATE_DIVERGED', updated_at = now()
-          WHERE status = 'sent' AND order_code = ANY(${mismatches}::text[])`;
-        await reconcileUpstreamWithSheet(rows);
-      }
       stage = "postgres-import";
-      count = await importSheetOrders(rows, { sheetAuthoritative: true });
+      // Sheet wins for orders whose app change is already confirmed; orders with an unsent or just-sent change keep the app value.
+      count = await importSheetOrders(rows, { sheetAuthoritative: true, fetchStartedAt });
+      const owners = user.role === "shipper" ? [user.id] : (await sql`SELECT id FROM mealfit_accounts WHERE role = 'shipper'`).map(row => row.id);
+      await repairSessions(owners);
       const sheetCodes = [...new Set(rows.map(row => String(row?.["Mã đơn"] || row?.code || "").trim()).filter(Boolean))];
       if (sheetCodes.length) {
         await sql`UPDATE mealfit_operations operation

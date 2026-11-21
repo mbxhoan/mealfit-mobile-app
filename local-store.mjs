@@ -1,13 +1,8 @@
-import { restoreConflictedSession } from "./domain.mjs";
-
 const DB_NAME = "mealfit-prototype";
 const DB_VERSION = 3;
 let databasePromise;
 
 const clone = value => JSON.parse(JSON.stringify(value));
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const stateKey = userId => `state:${userId || "anonymous"}`;
-const keyOf = (userId, type, id) => `${userId || "anonymous"}:${type}:${id}`;
 
 export function openLocalDb() {
   if (databasePromise) return databasePromise;
@@ -46,10 +41,6 @@ export function appLogRetryDelay(attempts) {
   return Math.min(300_000, 1_000 * (2 ** Math.min(Math.max(0, Number(attempts) || 0), 8)));
 }
 
-export function isFirstInstallSync({ attempted, lastUser, hasStoredState }) {
-  return !attempted && !lastUser && !hasStoredState;
-}
-
 function complete(transaction) {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
@@ -65,272 +56,19 @@ function requestValue(request) {
   });
 }
 
-export async function readState(fallback, userId) {
+// Before the server became the single source of truth, edits waited in this device's outbox. The new app never writes
+// there; it only sends what is left once (see drainLegacyOutbox in app.js) so no earlier edit is lost.
+export async function getLegacyOutbox(userId) {
   const db = await openLocalDb();
-  const record = await requestValue(db.transaction("state", "readonly").objectStore("state").get(stateKey(userId)));
-  return record?.value ? clone(record.value) : clone(fallback);
+  const values = await requestValue(db.transaction("outbox", "readonly").objectStore("outbox").getAll());
+  return values.filter(item => item.ownerId === userId).sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export async function writeStateSnapshot(value, userId) {
-  const db = await openLocalDb();
-  const tx = db.transaction("state", "readwrite");
-  tx.objectStore("state").put({ key: stateKey(userId), value: clone(value), updatedAt: Date.now() });
-  await complete(tx);
-}
-
-export async function restoreSessionState(sessionId, userId) {
-  const db = await openLocalDb();
-  const tx = db.transaction(["state", "outbox"], "readwrite");
-  const stateStore = tx.objectStore("state");
-  const outbox = tx.objectStore("outbox");
-  const record = await requestValue(stateStore.get(stateKey(userId)));
-  const state = restoreConflictedSession(record?.value || { orders: [], sessions: [], activeSessionId: null }, sessionId, userId);
-  const session = state.sessions.find(item => item.id === sessionId);
-  const entityKey = keyOf(userId, "session", sessionId);
-  const pending = (await requestValue(outbox.index("entityKey").getAll(entityKey)))
-    .filter(item => item.status === "conflict" || item.status === "queued")
-    .sort((a, b) => a.createdAt - b.createdAt);
-  const operation = pending.at(-1);
-  if (operation) {
-    operation.status = "queued";
-    operation.baseRevision = Number(session.serverRevision) || 0;
-    operation.payload = clone(session);
-    operation.updatedAt = Date.now();
-    outbox.put(operation);
-    for (const item of pending) if (item.id !== operation.id) outbox.delete(item.id);
-  }
-  stateStore.put({ key: stateKey(userId), value: state, updatedAt: Date.now() });
-  await complete(tx);
-  return clone(state);
-}
-
-function entityChanges(previous, next) {
-  const changes = [];
-  for (const type of ["order", "session"]) {
-    const property = type === "order" ? "orders" : "sessions";
-    const idOf = item => type === "order" ? item.id : item.id;
-    const before = new Map((previous[property] || []).map(item => [idOf(item), item]));
-    const after = new Map((next[property] || []).map(item => [idOf(item), item]));
-    for (const [id, value] of after) {
-      const oldValue = before.get(id);
-      if (!same(oldValue, value)) changes.push({ type, id, before: oldValue, value });
-    }
-    for (const [id, oldValue] of before) if (!after.has(id)) changes.push({ type, id, before: oldValue, value: null });
-  }
-  return changes;
-}
-
-export async function commitState(nextState, previousState, userId) {
-  const db = await openLocalDb();
-  const tx = db.transaction(["state", "outbox"], "readwrite");
-  const stateStore = tx.objectStore("state");
-  const outboxStore = tx.objectStore("outbox");
-  const previous = previousState || { orders: [], sessions: [] };
-  stateStore.put({ key: stateKey(userId), value: clone(nextState), updatedAt: Date.now() });
-  for (const change of entityChanges(previous, nextState)) {
-    const value = change.value || (change.type === "session" ? {
-      ...change.before,
-      status: "cancelled",
-      pausedAt: null,
-      completedAt: change.before?.completedAt || Date.now(),
-      deleted: true,
-      deletedAt: Date.now()
-    } : null);
-    if (!value) continue;
-    const entityKey = keyOf(userId, change.type, change.id);
-    const existing = await requestValue(outboxStore.index("entityKey").getAll(entityKey));
-    const baseRevision = Number(change.before?.serverRevision || 0);
-    // A "queued" item that was never actually sent can safely absorb the newer edit in place.
-    // Once an operation_id has been transmitted (whether it came back queued-after-failure or
-    // conflict), the server may have already bound that id to its original content, so it must
-    // never be resent with a different payload - start a fresh id instead and drop the stale one.
-    const reusable = existing.filter(item => item.status === "queued" && !item.attempted).sort((a, b) => a.createdAt - b.createdAt).at(-1);
-    if (reusable) {
-      reusable.payload = clone(value);
-      reusable.updatedAt = Date.now();
-      outboxStore.put(reusable);
-    } else {
-      for (const item of existing) {
-        if (item.status === "conflict" || (item.status === "queued" && item.attempted)) outboxStore.delete(item.id);
-      }
-      const item = {
-        id: crypto.randomUUID(),
-        ownerId: userId,
-        type: change.type,
-        entityId: change.id,
-        entityKey,
-        baseRevision,
-        payload: clone(value),
-        createdAt: Date.now(),
-        status: "queued"
-      };
-      outboxStore.put(item);
-    }
-  }
-  await complete(tx);
-}
-
-export async function mergeRemote({ orders = [], sessions = [], sheetAuthoritative = false }, userId) {
-  const db = await openLocalDb();
-  const tx = db.transaction(["state", "outbox"], "readwrite");
-  const stateStore = tx.objectStore("state");
-  const outbox = tx.objectStore("outbox");
-  const record = await requestValue(stateStore.get(stateKey(userId)));
-  const state = record?.value || { orders: [], sessions: [], activeSessionId: null };
-  const merge = async (type, incoming, property) => {
-    const items = new Map((state[property] || []).map(item => [item.id, item]));
-    for (const item of incoming) {
-      const key = keyOf(userId, type, item.id);
-      const pending = await requestValue(outbox.index("entityKey").getAll(key));
-      const current = items.get(item.id);
-      const blocked = pending.filter(operation => operation.status !== "done");
-      // The server already rejected every blocked operation of this session, so the local copy can never be sent;
-      // keeping it would leave this device permanently different from the others. Server state wins.
-      if (type === "session" && blocked.length && !current?.syncConflict && blocked.every(operation => operation.status === "conflict")) {
-        for (const operation of blocked) outbox.delete(operation.id);
-        if (item.deleted) items.delete(item.id);
-        else items.set(item.id, clone(item));
-        continue;
-      }
-      if (sheetAuthoritative) for (const operation of blocked.filter(item => item.status === "conflict")) outbox.delete(operation.id);
-      if (!sheetAuthoritative && blocked.some(operation => operation.status !== "conflict")) continue;
-      if (!sheetAuthoritative && blocked.length && Number(item.serverRevision || 0) < Number(current?.serverRevision || 0)) continue;
-      if (!sheetAuthoritative && blocked.length) for (const operation of blocked) outbox.delete(operation.id);
-      if (type === "session" && item.deleted) { items.delete(item.id); continue; }
-      if (sheetAuthoritative || !current || Number(item.serverRevision || 0) >= Number(current.serverRevision || 0)) items.set(item.id, clone(item));
-    }
-    state[property] = [...items.values()];
-  };
-  await merge("order", orders, "orders");
-  await merge("session", sessions, "sessions");
-  if (!state.sessions.some(session => session.id === state.activeSessionId && ["notStarted", "active", "paused"].includes(session.status))) {
-    state.activeSessionId = state.sessions.find(session => ["notStarted", "active", "paused"].includes(session.status))?.id || null;
-  }
-  stateStore.put({ key: stateKey(userId), value: state, updatedAt: Date.now() });
-  await complete(tx);
-  return clone(state);
-}
-
-export async function nextOutboxBatch(userId, limit = 40) {
+export async function deleteLegacyOutboxItems(ids) {
   const db = await openLocalDb();
   const tx = db.transaction("outbox", "readwrite");
-  const store = tx.objectStore("outbox");
-  const values = (await requestValue(store.getAll())).filter(item => item.ownerId === userId).sort((a, b) => a.createdAt - b.createdAt);
-  const now = Date.now();
-  for (const item of values) if (shouldRetryInflight(item, now)) { item.status = "queued"; store.put(item); }
-  for (const item of values) {
-    if (item.status === "conflict" && item.type === "order" && item.payload?.deliveryStatus === "Đã giao hàng" && !item.deliveryConflictRetried) {
-      item.status = "queued";
-      item.deliveryConflictRetried = true;
-      item.updatedAt = now;
-      store.put(item);
-    }
-  }
-  const used = new Set();
-  const batch = [];
-  for (const item of values) {
-    if (item.status === "conflict") { used.add(item.entityKey); continue; }
-    if (used.has(item.entityKey)) continue;
-    if (item.status !== "queued") continue;
-    used.add(item.entityKey);
-    item.status = "inflight";
-    item.attempted = true;
-    item.updatedAt = now;
-    store.put(item);
-    batch.push(clone(item));
-    if (batch.length >= limit) break;
-  }
+  for (const id of ids) tx.objectStore("outbox").delete(id);
   await complete(tx);
-  return batch;
-}
-
-export async function ackOutbox(operationId, revision) {
-  const db = await openLocalDb();
-  const tx = db.transaction(["state", "outbox"], "readwrite");
-  const stateStore = tx.objectStore("state");
-  const outbox = tx.objectStore("outbox");
-  const item = await requestValue(outbox.get(operationId));
-  if (!item) { await complete(tx); return; }
-  const record = await requestValue(stateStore.get(stateKey(item.ownerId)));
-  const state = record?.value;
-  const property = item.type === "order" ? "orders" : "sessions";
-  const entity = state?.[property]?.find(value => value.id === item.entityId);
-  if (entity) entity.serverRevision = Number(revision);
-  if (state) stateStore.put({ key: stateKey(item.ownerId), value: state, updatedAt: Date.now() });
-  outbox.delete(operationId);
-  const remaining = await requestValue(outbox.index("entityKey").getAll(item.entityKey));
-  const next = remaining.sort((a, b) => a.createdAt - b.createdAt)[0];
-  if (next) { next.baseRevision = Number(revision); next.status = "queued"; outbox.put(next); }
-  await complete(tx);
-}
-
-export async function rebaseOutbox(operationId, revision) {
-  const value = Number(revision);
-  if (!Number.isSafeInteger(value) || value < 0) return;
-  const db = await openLocalDb();
-  const tx = db.transaction("outbox", "readwrite");
-  const store = tx.objectStore("outbox");
-  const item = await requestValue(store.get(operationId));
-  if (item?.status === "inflight") { item.baseRevision = value; store.put(item); }
-  await complete(tx);
-}
-
-export async function retryDeliveryConflict(operationId) {
-  const db = await openLocalDb();
-  const tx = db.transaction("outbox", "readwrite");
-  const store = tx.objectStore("outbox");
-  const item = await requestValue(store.get(operationId));
-  const retry = item?.status === "inflight" && item.type === "order"
-    && item.payload?.deliveryStatus === "Đã giao hàng" && !item.deliveryConflictRetried;
-  if (retry) {
-    item.status = "queued";
-    item.deliveryConflictRetried = true;
-    item.updatedAt = Date.now();
-    store.put(item);
-  }
-  await complete(tx);
-  return Boolean(retry);
-}
-
-export async function failOutbox(operationId, conflict = false, reason = null) {
-  const db = await openLocalDb();
-  const tx = db.transaction("outbox", "readwrite");
-  const store = tx.objectStore("outbox");
-  const item = await requestValue(store.get(operationId));
-  if (item) {
-    item.status = conflict ? "conflict" : "queued";
-    item.lastError = reason ? String(reason).slice(0, 300) : item.lastError || null;
-    store.put(item);
-  }
-  await complete(tx);
-}
-
-export async function requeueOutboxConflict(operationId) {
-  const db = await openLocalDb();
-  const tx = db.transaction(["state", "outbox"], "readwrite");
-  const stateStore = tx.objectStore("state");
-  const outbox = tx.objectStore("outbox");
-  const item = await requestValue(outbox.get(operationId));
-  if (!item) { await complete(tx); return false; }
-  const record = await requestValue(stateStore.get(stateKey(item.ownerId)));
-  const entity = record?.value?.[item.type === "order" ? "orders" : "sessions"]?.find(value => value.id === item.entityId);
-  outbox.delete(item.id);
-  // A conflict item's operation_id may already be bound server-side to its original content;
-  // resending it unchanged (even with a fresh baseRevision) can keep failing idempotency checks
-  // forever. Retry as a brand new operation instead of reusing the poisoned id.
-  outbox.put({
-    id: crypto.randomUUID(),
-    ownerId: item.ownerId,
-    type: item.type,
-    entityId: item.entityId,
-    entityKey: item.entityKey,
-    baseRevision: Number(entity?.serverRevision || 0),
-    payload: item.payload,
-    createdAt: Date.now(),
-    status: "queued"
-  });
-  await complete(tx);
-  return true;
 }
 
 export async function enqueueAppLog(log, ownerId) {
@@ -386,12 +124,6 @@ export async function failAppLog(id) {
   return retryAfter;
 }
 
-export async function getOutbox(userId) {
-  const db = await openLocalDb();
-  const values = await requestValue(db.transaction("outbox", "readonly").objectStore("outbox").getAll());
-  return values.filter(item => item.ownerId === userId).sort((a, b) => a.createdAt - b.createdAt);
-}
-
 export async function getMeta(key) {
   const db = await openLocalDb();
   return (await requestValue(db.transaction("meta", "readonly").objectStore("meta").get(key)))?.value;
@@ -402,25 +134,6 @@ export async function setMeta(key, value) {
   const tx = db.transaction("meta", "readwrite");
   tx.objectStore("meta").put({ key, value, updatedAt: Date.now() });
   await complete(tx);
-}
-
-export async function claimFirstInstallSync() {
-  const db = await openLocalDb();
-  const tx = db.transaction(["meta", "state"], "readwrite");
-  const meta = tx.objectStore("meta");
-  const [attempted, lastUser, stateKeys] = await Promise.all([
-    requestValue(meta.get("initialSyncAttempted")),
-    requestValue(meta.get("lastUser")),
-    requestValue(tx.objectStore("state").getAllKeys())
-  ]);
-  const shouldSync = isFirstInstallSync({
-    attempted: Boolean(attempted?.value),
-    lastUser: lastUser?.value,
-    hasStoredState: stateKeys.some(key => String(key).startsWith("state:"))
-  });
-  meta.put({ key: "initialSyncAttempted", value: true, updatedAt: Date.now() });
-  await complete(tx);
-  return shouldSync;
 }
 
 export async function getOrderPhotos(orderId) {

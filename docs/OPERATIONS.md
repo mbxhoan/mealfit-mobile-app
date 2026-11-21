@@ -4,7 +4,7 @@ Local: `npm run dev` chạy Vite; để chạy Vercel Functions bằng `npm run 
 
 ## Database và môi trường
 
-Tạo database Postgres riêng cho app rồi chạy lần lượt `db/migrations/001_initial.sql` và `db/migrations/002_account_directory.sql`. Chạy migration mới sau khi deploy bản có danh bạ tài khoản trước khi mở app. Đặt các biến sau ở Vercel và local:
+Tạo database Postgres riêng cho app rồi chạy lần lượt `db/migrations/001_initial.sql`, `002_account_directory.sql` và `003_server_authoritative.sql` (cộng thêm cột `delivered_at`, `delivery_method` và cho phép lệnh trong sổ idempotency). Migration `004_one_open_session.sql` (mỗi shipper tối đa 1 phiên mở) chỉ chạy **sau** `scripts/repair-owner.mjs --apply`; nó tự dừng nếu còn shipper có nhiều phiên mở. Chạy migration trước khi deploy code mới. Đặt các biến sau ở Vercel và local:
 
 | Biến | Giá trị / mục đích |
 | --- | --- |
@@ -41,12 +41,23 @@ Giá trị hợp lệ: giao hàng `Chưa giao hàng`, `Đang giao hàng`, `Đã 
 
 ## Đồng bộ và khôi phục
 
-- UI xác nhận thay đổi cục bộ sau khi IndexedDB ghi xong; mỗi lần thao tác giữ nguyên operation ID và body để retry. Khi đồng bộ thủ công, API luôn đọc đủ danh sách hiện tại từ webhook n8n, không dùng snapshot Neon theo thời gian. API đẩy thay đổi đơn lên webhook và chờ Sheet xác nhận trước khi báo thành công; sau đó mới tải danh sách đã nhập vào Neon làm bản sao dự phòng. Nếu webhook lỗi, thao tác vẫn nằm trong hàng đợi trên thiết bị và không được xem là đã đồng bộ. Khi nhập snapshot, dữ liệu Sheet được ưu tiên hơn revision/cache/conflict của Neon; thông tin phiên, ảnh và dữ liệu chỉ có trong app vẫn được lưu riêng.
-- API dùng revision ở Postgres, hàng đợi theo thứ tự phiên bản và idempotency key khi đẩy n8n. Các bản chưa từng gửi của cùng đơn được gộp theo trạng thái mới nhất; bản đã thử gửi được giữ nguyên để retry an toàn. API chờ webhook xác nhận trong thao tác online; worker vẫn xử lý các lần thử lại và cron. Các request `shipping-order` được giãn tối thiểu 1,1 giây để tôn trọng webhook; nếu Sheet từ chối revision, lần tải Sheet kế tiếp sẽ áp dụng trạng thái Sheet và đóng xung đột theo chính sách nguồn chuẩn.
-- Sau lượt tải đầy đủ, mỗi tài khoản shipper có snapshot mã đơn từ Sheet. Danh sách và thống kê của shipper chỉ dùng snapshot đó, cộng các đơn còn trong phiên đang mở; các đơn lịch sử vẫn được lưu để tra cứu.
-- Vercel Blob lưu ảnh riêng tư trước khi upload n8n. Ảnh và hàng đợi trên thiết bị được giữ khi mất mạng; cần mở lại app có mạng để thử đồng bộ.
-- Cron mỗi ngày nhập thay đổi từ Sheet, chạy hàng đợi và lưu snapshot JSON riêng tư. Cron Hobby chỉ chạy tối đa một lần/ngày và trễ theo giờ; nâng Pro để có lịch nền dày hơn. Sao chép backup sang vị trí độc lập, giới hạn quyền đọc, và thử khôi phục định kỳ.
+Máy chủ là nguồn dữ liệu chung: mọi thiết bị dùng cùng tài khoản đọc cùng một trạng thái từ Postgres.
+
+- **Ghi (`POST /api/commands`)**: mỗi thao tác (giao, thu tiền, tạo/bắt đầu/tạm dừng/hủy/xóa/hoàn tất phiên, thêm/bỏ/sắp xếp đơn, ghi chú...) là một lệnh idempotent (`commandId` do máy sinh, giữ nguyên khi thử lại). Máy chủ khóa theo tài khoản (10 máy cùng tài khoản xếp hàng tuần tự), chạy cùng hàm `domain.mjs` với giờ máy chủ, sửa các bất biến (`server-lib/invariants.mjs`) rồi commit Postgres. Giao diện chỉ báo "đã lưu" khi máy chủ xác nhận; mất mạng thì báo lỗi, không có hàng đợi trên máy. Lệnh từ màn hình cũ lặp lại thao tác đã xảy ra sẽ thành công (no-op) và trả trạng thái mới nhất.
+- **Bất biến máy chủ**: mỗi shipper tối đa 1 phiên mở; phiên mở mà mọi đơn đã giao/hủy tự chuyển `Hoàn tất`; phiên mở rỗng tự hủy; hủy/xóa/gỡ chỉ giải phóng đơn chưa kết thúc (không đụng đơn đã giao/đã huỷ); đơn "Đang giao hàng" ngoài phiên mở được sửa theo bằng chứng của phiên (phiên hoàn tất có điểm giao → `Đã giao hàng`; phiên đã hủy/không còn → `Chưa giao hàng`); đơn không có `session_id` được giữ nguyên để người dùng chọn tay.
+- **Đọc**: mở app chỉ đọc Postgres (`GET /api/orders`, `GET /api/sessions`), không gọi n8n. Dữ liệu do máy khác thay đổi chỉ về khi bấm Đồng bộ; không có polling, không tự làm mới.
+- **Nút Đồng bộ (`POST /api/refresh`)**: đọc Google Sheet qua n8n, nhập vào Postgres (Sheet là chuẩn cho dữ liệu đơn), sửa các bất biến cho các shipper bị ảnh hưởng, rồi máy tải lại. Đơn có dòng outbox chưa gửi hoặc vừa gửi trong lúc đang đọc Sheet **không bị ghi đè** (giá trị app thắng cho tới khi Sheet xác nhận). Lệnh gọi lại trong 20 giây sau lần trước được trả thành công mà không gọi n8n.
+- **Đẩy Sheet (outbox bền)**: sau mỗi lệnh, server đẩy nền (`waitUntil`) trạng thái tuyệt đối mới nhất của từng đơn lên n8n (batch ≤20, idempotency key, `expected_revision` đọc lúc gửi, backoff tối đa 5 phút). Không còn trạng thái `conflict` treo: n8n/Sheet từ chối phiên bản thì server lấy phiên bản Sheet hiện tại và gửi lại, giá trị app thắng. n8n lỗi thì dữ liệu vẫn ở Postgres, Sheet cập nhật ở lần thử lại (sau lệnh kế tiếp, khi bấm Đồng bộ, hoặc cron). Cron Hobby chạy 1 lần/ngày; nâng Pro nếu cần flush dày hơn.
+- Vercel Blob lưu ảnh riêng tư trước khi upload n8n. Ảnh chưa gửi vẫn giữ trên máy khi mất mạng và được gửi lại sau lệnh giao hoặc khi bấm Đồng bộ.
+- Cron mỗi ngày nhập thay đổi từ Sheet, chạy hàng đợi, sửa bất biến cho mọi shipper và lưu snapshot JSON riêng tư. Sao chép backup sang vị trí độc lập, giới hạn quyền đọc, và thử khôi phục định kỳ.
 - Khôi phục database từ snapshot cần tạo database/branch mới, kiểm tra JSON và nạp lại theo dependency: orders, sessions, operations, payments, outbox, media, conflicts, audit, auth attempts, sync metadata. Không ghi đè production khi chưa kiểm tra backup.
+
+### Chuyển từ phiên bản cũ (offline-first)
+
+1. Backup database. Cho các thiết bị còn bản cũ bấm Đồng bộ đến khi hết thay đổi chờ.
+2. Chạy migration 003 trên DB đích, deploy server + client mới cùng lúc. Bản mới tự gửi một lần các thao tác còn trong outbox cũ trên máy (qua `/api/operations`, giữ lại một phiên bản) rồi không dùng IndexedDB cũ nữa (không bị xóa).
+3. `DATABASE_URL=... node scripts/repair-owner.mjs` (dry-run, đọc báo cáo) → khi được duyệt: `--apply` → chạy `004_one_open_session.sql`. **Không chạy trên Production khi chưa được cho phép rõ ràng.**
+4. Phiên bản sau: xóa `api/operations.js`, `claim.js`, `changes.js` (kiểm `mealfit_audit_log` có `operation='claim'` trước) và UI xung đột admin.
 
 ## Trước khi bật production
 
@@ -56,4 +67,4 @@ Giá trị hợp lệ: giao hàng `Chưa giao hàng`, `Đang giao hàng`, `Đã 
 4. Kiểm tra tài khoản, phân quyền, nhận đơn nguyên tử, đồng bộ lặp lại, xung đột, camera/upload, tải lại offline, backup và khôi phục.
 5. Xoay token Zalo cũ nếu còn dùng bot Zalo; token đã có trong export cũ cần thay ở hệ thống Zalo trước khi bật lại integration.
 
-PIN được dùng chung giữa các tài khoản nên audit xác định user đăng nhập, không chứng minh người đang cầm thiết bị. Khi offline, thay đổi trên thiết bị chỉ đồng bộ sau khi có mạng; không hứa đồng bộ thiết bị chéo tức thời.
+PIN được dùng chung giữa các tài khoản nên audit xác định user đăng nhập, không chứng minh người đang cầm thiết bị. Ứng dụng cần mạng để ghi; thay đổi từ máy khác chỉ hiện sau khi bấm Đồng bộ, không có đồng bộ thiết bị chéo tức thời.

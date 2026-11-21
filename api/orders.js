@@ -1,7 +1,7 @@
 import { handler, requireMethod, send, AppError } from "../server-lib/core.mjs";
 import { requireUser } from "../server-lib/auth.mjs";
 import { getSql } from "../server-lib/db.mjs";
-import { importSheetOrders, orderFromRow } from "../server-lib/sync.mjs";
+import { dbClock, importSheetOrders, orderFromRow } from "../server-lib/sync.mjs";
 import { fetchSheetOrder } from "../server-lib/n8n.mjs";
 
 function cursorFrom(value) {
@@ -26,8 +26,9 @@ export default handler(async (req, res) => {
     if (!order) throw new AppError(404, "ORDER_NOT_FOUND", "Không tìm thấy đơn hàng.");
     if (user.role === "shipper" && order.assignedUserId && order.assignedUserId !== user.id) throw new AppError(403, "ORDER_FORBIDDEN", "Đơn hàng này chưa được giao cho tài khoản của bạn.");
     if (url.searchParams.get("refresh") === "1") {
+      const fetchStartedAt = await dbClock(sql);
       const sheetRow = await fetchSheetOrder(code).catch(error => { throw error instanceof AppError ? error : new AppError(502, "ORDER_REFRESH_FAILED", "Không thể làm mới chi tiết đơn hàng."); });
-      await importSheetOrders([sheetRow]);
+      await importSheetOrders([sheetRow], { fetchStartedAt });
       rows = await sql`SELECT * FROM mealfit_orders WHERE code = ${code} LIMIT 1`;
       order = rows[0] && orderFromRow(rows[0]);
       if (user.role === "shipper" && order.assignedUserId && order.assignedUserId !== user.id) throw new AppError(403, "ORDER_FORBIDDEN", "Đơn hàng này chưa được giao cho tài khoản của bạn.");

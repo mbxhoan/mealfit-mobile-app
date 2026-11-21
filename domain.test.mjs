@@ -25,7 +25,6 @@ import {
   removeOrderFromSession,
   reopenDeliveredOrder,
   resolveOrphanDelivery,
-  restoreConflictedSession,
   resumeSession,
   setOrderMapsLink,
   setOrderNote,
@@ -157,22 +156,21 @@ test("deliver/pay succeed even when a server refresh wiped the order's own sessi
   assert.equal(order(delivered, "B").deliveryStatus, "Đã giao hàng");
 });
 
-test("deliver/pay still reject a conflicted or non-active session even if it owns the order", () => {
-  const sessionB = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
-  const sessionA = startSession(createSession(seed(), ["C"], { C: "Sáng" }, 1500), 2000);
-  const ordersById = Object.fromEntries(sessionB.orders.map(item => [item.id, item]));
-  ordersById.C = sessionA.orders.find(item => item.id === "C");
-  const conflicted = {
-    activeSessionId: sessionA.sessions[0].id,
-    sessions: [sessionA.sessions[0], { ...sessionB.sessions[0], syncConflict: true }],
-    orders: Object.values(ordersById)
-  };
-  assert.throws(() => markPaid(conflicted, "B", "Tiền mặt", 3000));
-  assert.throws(() => markDelivered(conflicted, "B", 4000));
-
-  const paused = { ...conflicted, sessions: conflicted.sessions.map(item => item.id === sessionB.sessions[0].id ? { ...item, syncConflict: false, status: "paused" } : item) };
+test("deliver/pay reject a paused session even if it owns the order", () => {
+  const started = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  const paused = pauseSession(started, 2500);
   assert.throws(() => markPaid(paused, "B", "Tiền mặt", 3000));
   assert.throws(() => markDelivered(paused, "B", 4000));
+});
+
+test("cancelling a session releases open orders but keeps delivered and cancelled ones as they are", () => {
+  let state = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  state = markDelivered(state, "A", 3000);
+  state = { ...state, orders: state.orders.map(item => item.id === "B" ? { ...item, deliveryStatus: "Đã huỷ đơn" } : item) };
+  const cancelled = cancelSession(state, 4000);
+  assert.equal(order(cancelled, "A").deliveryStatus, "Đã giao hàng");
+  assert.equal(order(cancelled, "A").deliveredAt, 3000);
+  assert.equal(order(cancelled, "B").deliveryStatus, "Đã huỷ đơn");
 });
 
 test("payment sync records the collected remainder instead of the order value", () => {
@@ -376,37 +374,6 @@ test("deleting a session clears stale route fields on every unfinished stop", ()
   assert.equal(order(deleted, "B").deliveredAt, null);
 });
 
-test("restoring a conflicted session uses its owner record even when stop assignments changed", () => {
-  let state = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
-  state = {
-    ...state,
-    orders: state.orders.map(item => ["A", "B"].includes(item.id) ? { ...item, assignedUserId: "another-shipper" } : item)
-  };
-  const sessionId = state.activeSessionId;
-  state = { ...state, activeSessionId: null, sessions: state.sessions.map(item => item.id === sessionId ? { ...item, ownerId: "hieu", syncConflict: true } : item) };
-
-  const restored = restoreConflictedSession(state, sessionId, "hieu");
-  assert.equal(restored.activeSessionId, sessionId);
-  assert.equal(restored.sessions.find(item => item.id === sessionId).syncConflict, false);
-});
-
-test("restoring a conflicted session is blocked when another account owns the session", () => {
-  let state = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
-  const sessionId = state.activeSessionId;
-  state = { ...state, activeSessionId: null, sessions: state.sessions.map(item => item.id === sessionId ? { ...item, ownerId: "hoan", syncConflict: true } : item) };
-
-  assert.throws(() => restoreConflictedSession(state, sessionId, "hieu"), /thuộc tài khoản shipper khác/);
-});
-
-test("restoring a conflicted session is blocked while another session is already active", () => {
-  let state = startSession(createSession(seed(), ["A"], { A: "Sáng" }, 1000), 2000);
-  const conflictedId = state.activeSessionId;
-  state = { ...state, activeSessionId: null, sessions: state.sessions.map(item => item.id === conflictedId ? { ...item, ownerId: "hieu", syncConflict: true } : item) };
-  state = startSession(createSession(state, ["B"], { B: "Sáng" }, 3000), 4000);
-
-  assert.throws(() => restoreConflictedSession(state, conflictedId, "hieu"));
-});
-
 test("route stats count session cash and transfer collections, route value and completed shifts", () => {
   let state = createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000);
   const beforeStart = getSessionStats(state, session(state).id);
@@ -544,39 +511,10 @@ test("legacy sessions normalize without discarding orders or route progress", ()
   assert.equal(setSessionOrderShift(unstarted, "A", "Sáng").sessions[0].shifts.A, "Sáng");
 });
 
-test("normalizing backfills a session leg for an order completed outside the app's own flow", () => {
-  const route = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
-  const externallyCompleted = {
-    ...route,
-    orders: route.orders.map(item => item.id === "B" ? { ...item, deliveryStatus: "Đã giao hàng", paymentStatus: "Đã thanh toán", remainingDue: 0 } : item)
-  };
-  assert.equal(externallyCompleted.sessions[0].legs.B, undefined);
-
-  const normalized = normalizeState(externallyCompleted);
-  assert.ok(normalized.sessions[0].legs.B?.completedAt);
-  assert.throws(() => markDelivered(normalized, "B", 5000), /Đơn hàng không ở trạng thái đang giao/);
-
-  const untouched = normalizeState(route);
-  assert.equal(untouched.sessions[0].legs.B, undefined);
-});
-
 test("photo selection never allows more than five saved photos per order", () => {
   assert.equal(allowedPhotoCount(0, 8), 5);
   assert.equal(allowedPhotoCount(4, 3), 1);
   assert.equal(allowedPhotoCount(5, 1), 0);
-});
-
-test("normalizing closes an open session once every stop is done so all devices agree", () => {
-  const route = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
-  const delivered = { ...route, orders: route.orders.map(item => ({ ...item, deliveryStatus: "Đã giao hàng", deliveredAt: 3000 })) };
-  const normalized = normalizeState(delivered);
-  assert.equal(normalized.sessions[0].status, "completed");
-  assert.equal(normalized.sessions[0].completedAt, 3000);
-  assert.equal(normalized.activeSessionId, null);
-
-  const partial = normalizeState({ ...route, orders: route.orders.map(item => item.id === "A" ? { ...item, deliveryStatus: "Đã giao hàng", deliveredAt: 3000 } : item) });
-  assert.equal(partial.sessions[0].status, "active");
-  assert.equal(partial.activeSessionId, route.sessions[0].id);
 });
 
 test("completeSession closes a route with no pending stops and refuses one that still has stops", () => {
