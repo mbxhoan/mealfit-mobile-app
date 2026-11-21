@@ -35,7 +35,7 @@ import { apiRequest as sendApiRequest } from "./api-client.mjs";
 import {
   ackAppLog, ackOutbox, commitState, deletePhoto as deleteLocalPhoto, enqueueAppLog, failAppLog, failOutbox, getMeta, getOutbox,
   getOrderPhotos as loadOrderPhotos, getPendingPhotos, mergeRemote,
-  nextAppLog, restoreSessionState, retryDeliveryConflict,
+  nextAppLog, requeueOutboxConflict, restoreSessionState, retryDeliveryConflict,
   nextOutboxBatch, openLocalDb, putPhoto as storeLocalPhoto, readState, rebaseOutbox, setMeta, writeStateSnapshot
 } from "./local-store.mjs";
 import { inject } from '@vercel/analytics';
@@ -1860,7 +1860,7 @@ app.addEventListener("click", async event => {
   }
   if (action === "retry-outbox-conflict") {
     if (!setButtonBusy(button, true)) return;
-    await failOutbox(id, false);
+    await requeueOutboxConflict(id);
     await refreshShipperConflicts();
     modal = shipperConflictItems.length ? { type: "outbox-conflicts", items: shipperConflictItems } : null;
     render();

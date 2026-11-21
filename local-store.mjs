@@ -139,16 +139,20 @@ export async function commitState(nextState, previousState, userId) {
     if (!value) continue;
     const entityKey = keyOf(userId, change.type, change.id);
     const existing = await requestValue(outboxStore.index("entityKey").getAll(entityKey));
-    const reusable = existing.filter(item => item.status === "queued" || item.status === "conflict").sort((a, b) => a.createdAt - b.createdAt).at(-1);
     const baseRevision = Number(change.before?.serverRevision || 0);
+    // A "queued" item that was never actually sent can safely absorb the newer edit in place.
+    // Once an operation_id has been transmitted (whether it came back queued-after-failure or
+    // conflict), the server may have already bound that id to its original content, so it must
+    // never be resent with a different payload - start a fresh id instead and drop the stale one.
+    const reusable = existing.filter(item => item.status === "queued" && !item.attempted).sort((a, b) => a.createdAt - b.createdAt).at(-1);
     if (reusable) {
       reusable.payload = clone(value);
-      reusable.baseRevision = baseRevision;
-      reusable.status = "queued";
       reusable.updatedAt = Date.now();
-      delete reusable.deliveryConflictRetried;
       outboxStore.put(reusable);
     } else {
+      for (const item of existing) {
+        if (item.status === "conflict" || (item.status === "queued" && item.attempted)) outboxStore.delete(item.id);
+      }
       const item = {
         id: crypto.randomUUID(),
         ownerId: userId,
@@ -222,6 +226,7 @@ export async function nextOutboxBatch(userId, limit = 40) {
     if (item.status !== "queued") continue;
     used.add(item.entityKey);
     item.status = "inflight";
+    item.attempted = true;
     item.updatedAt = now;
     store.put(item);
     batch.push(clone(item));
@@ -290,6 +295,34 @@ export async function failOutbox(operationId, conflict = false, reason = null) {
     store.put(item);
   }
   await complete(tx);
+}
+
+export async function requeueOutboxConflict(operationId) {
+  const db = await openLocalDb();
+  const tx = db.transaction(["state", "outbox"], "readwrite");
+  const stateStore = tx.objectStore("state");
+  const outbox = tx.objectStore("outbox");
+  const item = await requestValue(outbox.get(operationId));
+  if (!item) { await complete(tx); return false; }
+  const record = await requestValue(stateStore.get(stateKey(item.ownerId)));
+  const entity = record?.value?.[item.type === "order" ? "orders" : "sessions"]?.find(value => value.id === item.entityId);
+  outbox.delete(item.id);
+  // A conflict item's operation_id may already be bound server-side to its original content;
+  // resending it unchanged (even with a fresh baseRevision) can keep failing idempotency checks
+  // forever. Retry as a brand new operation instead of reusing the poisoned id.
+  outbox.put({
+    id: crypto.randomUUID(),
+    ownerId: item.ownerId,
+    type: item.type,
+    entityId: item.entityId,
+    entityKey: item.entityKey,
+    baseRevision: Number(entity?.serverRevision || 0),
+    payload: item.payload,
+    createdAt: Date.now(),
+    status: "queued"
+  });
+  await complete(tx);
+  return true;
 }
 
 export async function enqueueAppLog(log, ownerId) {
