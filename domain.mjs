@@ -111,6 +111,18 @@ function sortPendingByShift(orderIds, shifts, legs) {
 
 const TERMINAL_DELIVERY_STATUSES = ["Đã giao hàng", "Đã huỷ đơn"];
 
+// Legs can be backfilled from order statuses that arrive from the server/Sheet, which bypasses markDelivered's own
+// completion step. Closing the session here keeps every device deriving the same status from the same data.
+function closeFinishedSession(session) {
+  if (session.syncConflict || !["active", "paused"].includes(session.status) || !session.orderIds.length) return session;
+  if (!session.orderIds.every(id => session.legs[id]?.completedAt)) return session;
+  const completedAt = Math.max(...session.orderIds.map(id => session.legs[id].completedAt));
+  const pauseIntervals = session.status === "paused" && session.pausedAt
+    ? [...session.pauseIntervals, { startedAt: session.pausedAt, resumedAt: Math.max(completedAt, session.pausedAt) }]
+    : session.pauseIntervals;
+  return { ...session, status: "completed", pausedAt: null, pauseIntervals, completedAt: session.completedAt ?? completedAt };
+}
+
 export function normalizeState(state) {
   const orders = state.orders.map(order => {
     if (order.paymentStatus !== "Chưa thanh toán" || Number(order.remainingDue) > 0) return order;
@@ -147,7 +159,7 @@ export function normalizeState(state) {
       completedAt: session.completedAt ?? null
     };
     normalized.orderIds = sortPendingByShift(normalized.orderIds, normalized.shifts, normalized.legs);
-    return normalized;
+    return closeFinishedSession(normalized);
   });
   const active = sessions.find(session => session.id === state.activeSessionId && !session.syncConflict && OPEN_SESSION_STATUSES.includes(session.status))
     || sessions.find(session => !session.syncConflict && OPEN_SESSION_STATUSES.includes(session.status));

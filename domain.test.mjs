@@ -564,3 +564,16 @@ test("photo selection never allows more than five saved photos per order", () =>
   assert.equal(allowedPhotoCount(4, 3), 1);
   assert.equal(allowedPhotoCount(5, 1), 0);
 });
+
+test("normalizing closes an open session once every stop is done so all devices agree", () => {
+  const route = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  const delivered = { ...route, orders: route.orders.map(item => ({ ...item, deliveryStatus: "Đã giao hàng", deliveredAt: 3000 })) };
+  const normalized = normalizeState(delivered);
+  assert.equal(normalized.sessions[0].status, "completed");
+  assert.equal(normalized.sessions[0].completedAt, 3000);
+  assert.equal(normalized.activeSessionId, null);
+
+  const partial = normalizeState({ ...route, orders: route.orders.map(item => item.id === "A" ? { ...item, deliveryStatus: "Đã giao hàng", deliveredAt: 3000 } : item) });
+  assert.equal(partial.sessions[0].status, "active");
+  assert.equal(partial.activeSessionId, route.sessions[0].id);
+});

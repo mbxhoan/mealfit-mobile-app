@@ -2,6 +2,7 @@ import { handler, requireMethod, send } from "../server-lib/core.mjs";
 import { requireUser } from "../server-lib/auth.mjs";
 import { getSql } from "../server-lib/db.mjs";
 import { orderFromRow } from "../server-lib/sync.mjs";
+import { withFinishedSessionsClosed } from "../server-lib/sessions.mjs";
 
 export default handler(async (req, res) => {
   requireMethod(req, "GET");
@@ -41,5 +42,5 @@ export default handler(async (req, res) => {
       sessions.push({ ...row.record.payload, serverRevision: Number(row.record.revision) });
     }
   }
-  send(res, 200, { orders, sessions, nextCursor: page.length ? String(page.at(-1).audit_id) : null, hasMore });
+  send(res, 200, { orders, sessions: await withFinishedSessionsClosed(sessions), nextCursor: page.length ? String(page.at(-1).audit_id) : null, hasMore });
 });

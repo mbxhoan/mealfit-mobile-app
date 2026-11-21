@@ -184,6 +184,14 @@ export async function mergeRemote({ orders = [], sessions = [], sheetAuthoritati
       const pending = await requestValue(outbox.index("entityKey").getAll(key));
       const current = items.get(item.id);
       const blocked = pending.filter(operation => operation.status !== "done");
+      // The server already rejected every blocked operation of this session, so the local copy can never be sent;
+      // keeping it would leave this device permanently different from the others. Server state wins.
+      if (type === "session" && blocked.length && !current?.syncConflict && blocked.every(operation => operation.status === "conflict")) {
+        for (const operation of blocked) outbox.delete(operation.id);
+        if (item.deleted) items.delete(item.id);
+        else items.set(item.id, clone(item));
+        continue;
+      }
       if (sheetAuthoritative) for (const operation of blocked.filter(item => item.status === "conflict")) outbox.delete(operation.id);
       if (!sheetAuthoritative && blocked.some(operation => operation.status !== "conflict")) continue;
       if (!sheetAuthoritative && blocked.length && Number(item.serverRevision || 0) < Number(current?.serverRevision || 0)) continue;
