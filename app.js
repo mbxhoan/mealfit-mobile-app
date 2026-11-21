@@ -526,7 +526,7 @@ function updateSelectionDetailsStatus(details) {
 function sessionCreateScreen() {
   if (role !== "shipper") return `<main class="page"><div class="empty-state">Phiên giao hàng dành cho shipper.</div></main>`;
   if (activeSession()) return sessionScreen();
-  const pending = state.orders.filter(order => isAssignedPendingOrder(order, user?.id));
+  const pending = state.orders.filter(order => canSeeOrder(order) && isAssignedPendingOrder(order, user?.id));
   const eligibleIds = new Set(pending.map(order => order.id));
   const selectedIds = (window._sessionSelection || []).filter(id => eligibleIds.has(id));
   window._sessionSelection = selectedIds;
@@ -638,7 +638,7 @@ function sessionScreen() {
 function addOrdersScreen() {
   const session = activeSession();
   if (role !== "shipper" || !session || !["active", "notStarted"].includes(session.status)) return `<main class="page"><div class="empty-state">Tiếp tục phiên trước khi thêm đơn.</div></main>`;
-  const pending = state.orders.filter(order => isAssignedPendingOrder(order, user?.id) && !session.orderIds.includes(order.id));
+  const pending = state.orders.filter(order => canSeeOrder(order) && isAssignedPendingOrder(order, user?.id) && !session.orderIds.includes(order.id));
   const eligibleIds = new Set(pending.map(order => order.id));
   const selectedIds = (window._addSelection || []).filter(id => eligibleIds.has(id));
   window._addSelection = selectedIds;
@@ -1962,7 +1962,7 @@ app.addEventListener("click", async event => {
   if (action === "create-session") {
     if (role !== "shipper") { flash("Chỉ shipper có thể tạo phiên giao hàng."); return; }
     try {
-      const selected = (window._sessionSelection || []).filter(id => isAssignedPendingOrder(orderById(id), user?.id));
+      const selected = (window._sessionSelection || []).filter(id => isAssignedPendingOrder(orderById(id), user?.id) && canSeeOrder(orderById(id)));
       await updateState(createSession(state, selected, window._sessionShifts || {}, Date.now(), window._sessionNotes || {}, window._sessionMaps || {}), "Phiên đã tạo · Sắp xếp tuyến trước khi bắt đầu.");
       window._sessionSelection = [];
       window._sessionShifts = {};
@@ -2081,7 +2081,7 @@ app.addEventListener("click", async event => {
   if (action === "confirm-add-orders") {
     if (role !== "shipper") { flash("Chỉ shipper có thể chỉnh sửa phiên."); return; }
     try {
-      const selected = (window._addSelection || []).filter(id => isAssignedPendingOrder(orderById(id), user?.id));
+      const selected = (window._addSelection || []).filter(id => isAssignedPendingOrder(orderById(id), user?.id) && canSeeOrder(orderById(id)));
       await updateState(addOrdersToSession(state, selected, addOrdersShift, window._addNotes || {}, window._addMaps || {}), "Đã thêm đơn vào phiên.");
       window._addSelection = []; window._addNotes = {}; window._addMaps = {}; viewStack.pop(); sessionTab = "route"; render();
       persistLastView();
