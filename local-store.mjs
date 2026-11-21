@@ -139,12 +139,15 @@ export async function commitState(nextState, previousState, userId) {
     if (!value) continue;
     const entityKey = keyOf(userId, change.type, change.id);
     const existing = await requestValue(outboxStore.index("entityKey").getAll(entityKey));
-    const queued = existing.filter(item => item.status === "queued").sort((a, b) => a.createdAt - b.createdAt).at(-1);
+    const reusable = existing.filter(item => item.status === "queued" || item.status === "conflict").sort((a, b) => a.createdAt - b.createdAt).at(-1);
     const baseRevision = Number(change.before?.serverRevision || 0);
-    if (queued) {
-      queued.payload = clone(value);
-      queued.updatedAt = Date.now();
-      outboxStore.put(queued);
+    if (reusable) {
+      reusable.payload = clone(value);
+      reusable.baseRevision = baseRevision;
+      reusable.status = "queued";
+      reusable.updatedAt = Date.now();
+      delete reusable.deliveryConflictRetried;
+      outboxStore.put(reusable);
     } else {
       const item = {
         id: crypto.randomUUID(),
@@ -276,12 +279,16 @@ export async function retryDeliveryConflict(operationId) {
   return Boolean(retry);
 }
 
-export async function failOutbox(operationId, conflict = false) {
+export async function failOutbox(operationId, conflict = false, reason = null) {
   const db = await openLocalDb();
   const tx = db.transaction("outbox", "readwrite");
   const store = tx.objectStore("outbox");
   const item = await requestValue(store.get(operationId));
-  if (item) { item.status = conflict ? "conflict" : "queued"; store.put(item); }
+  if (item) {
+    item.status = conflict ? "conflict" : "queued";
+    item.lastError = reason ? String(reason).slice(0, 300) : item.lastError || null;
+    store.put(item);
+  }
   await complete(tx);
 }
 

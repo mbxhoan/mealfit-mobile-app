@@ -952,7 +952,7 @@ async function syncQueued() {
             await ackOutbox(item.id, acknowledgement.revision);
             if (item.type === "order") confirmedOrders++;
           }
-          else await failOutbox(item.id);
+          else await failOutbox(item.id, false, "Máy chủ không xác nhận thao tác này.");
         }
       } catch (error) {
         const results = error.details?.results || [];
@@ -968,13 +968,13 @@ async function syncQueued() {
           }
           if (result?.conflict) {
             unresolvedConflict = true;
-            await failOutbox(item.id, true);
+            await failOutbox(item.id, true, error.message);
             if (result.errorCode === "SESSION_ORDER_FORBIDDEN" && result.sessionId) sessionConflicts.add(result.sessionId);
           }
           else if (result) await ackOutbox(item.id, result.revision);
           else {
             unresolvedConflict = true;
-            await failOutbox(item.id, error.status === 409);
+            await failOutbox(item.id, error.status === 409, error.message);
           }
         }
         if (retryingDeliveryConflict) { syncFailure = unresolvedConflict ? error : null; continue; }
@@ -1008,7 +1008,12 @@ async function syncQueued() {
   render();
   const pending = (await getOutbox(user.id)).filter(item => !["done", "conflict"].includes(item.status));
   if (syncFailure) throw syncFailure;
-  if (pending.length) throw new Error(`Còn ${pending.length} thay đổi chưa gửi được. Thử đồng bộ lại trước khi tải danh sách đơn.`);
+  if (pending.length) {
+    const reasons = [...new Set(pending.map(item => item.lastError).filter(Boolean))];
+    const error = new Error(`Còn ${pending.length} thay đổi chưa gửi được${reasons.length ? ` (${reasons.join("; ")})` : ""}. Vui lòng thử đồng bộ lại sau.`);
+    error.retryAfterMs = 15_000;
+    throw error;
+  }
   return { sessionConflicts: [...sessionConflicts], webhookPending, webhookPendingOrders: [...webhookPendingOrders], webhookError, confirmedOrders };
 }
 
