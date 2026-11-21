@@ -567,7 +567,7 @@ function sessionScreen() {
     return `<div class="route-stop ${done ? "done" : currentStop ? "current" : ""}" data-order-id="${safe(order.id)}" data-completed="${done}" data-shift="${safe(session.shifts?.[order.id] || "")}"><div class="stop-mark">${done ? icon("check", 17) : index + 1}</div><div class="stop-card" data-action="open-order-session" data-id="${safe(order.id)}" tabindex="-1">
       <button class="stop-open" data-action="open-order-session" data-id="${safe(order.id)}"><span class="stop-primary"><span class="stop-title">${safe(order.customer)} <small>· ${safe(order.id)}</small></span><span class="stop-total">${money(order.total)}<small class="money-sub">${dueAmount(order) ? `Thu ${money(dueAmount(order))}` : "Đã thanh toán"}</small></span></span><span class="stop-caption">${addressLabel(order.address)}</span>${collectionLine(order)}${customerNoteLine(order)}${order.note ? `<span class="stop-note">Ghi chú bởi shipper: ${safe(order.note)}</span>` : ""}</button>
       ${orderWarning(order)}${editable && !done ? noteTools(order) : ""}
-      <div class="stop-bottom">${shiftSelect(order)}<div class="stop-tools">${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}${phone ? `<a class="stop-call" href="tel:${safe(phone)}" aria-label="Gọi ${safe(order.customer)}">${icon("phone", 18)}</a>` : ""}${editable && !done ? `<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)} trong ca ${safe(session.shifts?.[order.id] || "chưa phân ca")}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button>` : ""}</div></div>
+      <div class="stop-bottom">${shiftSelect(order)}<div class="stop-tools">${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}${phone ? `<a class="stop-call" href="tel:${safe(phone)}" aria-label="Gọi ${safe(order.customer)}">${icon("phone", 18)}</a>` : ""}${editable && !done ? `<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button>` : ""}</div></div>
       ${leg ? `<div class="leg-time">${icon("clock", 14)} Chặng này: ${elapsedLabel(leg.durationMs)} · ${timeLabel(leg.completedAt)}</div>` : ""}
       ${!done && session.status === "paused" ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? '<button class="button secondary small" disabled>Đã thanh toán</button>' : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" disabled>Đã giao hàng</button></div>` : ""}
       ${!done && delivering ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? `<button class="button secondary small" data-action="pay-order" data-id="${safe(order.id)}">Đã thanh toán</button>` : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" data-action="deliver-order" data-id="${safe(order.id)}">Đã giao hàng</button></div>` : ""}</div></div>`;
@@ -585,12 +585,10 @@ function sessionScreen() {
   const unassigned = session.orderIds.filter(id => !session.shifts?.[id]).length;
   const orderListCard = (order, index) => {
     const done = isDone(order);
-    return `<div class="session-order ${done ? "done" : ""}" data-order-id="${safe(order.id)}" data-completed="${done}" data-shift="${safe(session.shifts?.[order.id] || "")}"><button class="session-order-open" data-action="open-order-session" data-id="${safe(order.id)}"><span class="session-order-top"><strong>${index + 1}. ${safe(order.customer)} · ${safe(order.id)}</strong>${statusBadge(routeStatus(order))}</span><span class="order-address">${addressLabel(order.address)}</span>${collectionLine(order)}${customerNoteLine(order)}${orderWarning(order)}${order.note ? `<span class="stop-note">Ghi chú bởi shipper: ${safe(order.note)}</span>` : ""}<span class="session-order-total">${money(order.total)} · ${dueAmount(order) ? `Còn thu ${money(dueAmount(order))}` : "Đã thanh toán"}</span></button>${editable && !done ? `<div class="session-order-tools">${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)} trong ca ${safe(session.shifts?.[order.id] || "chưa phân ca")}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button></div>${noteTools(order)}` : mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}</div>`;
+    return `<div class="session-order ${done ? "done" : ""}" data-order-id="${safe(order.id)}" data-completed="${done}" data-shift="${safe(session.shifts?.[order.id] || "")}"><button class="session-order-open" data-action="open-order-session" data-id="${safe(order.id)}"><span class="session-order-top"><strong>${index + 1}. ${safe(order.customer)} · ${safe(order.id)}</strong>${statusBadge(routeStatus(order))}</span><span class="order-address">${addressLabel(order.address)}</span>${collectionLine(order)}${customerNoteLine(order)}${orderWarning(order)}${order.note ? `<span class="stop-note">Ghi chú bởi shipper: ${safe(order.note)}</span>` : ""}<span class="session-order-total">${money(order.total)} · ${dueAmount(order) ? `Còn thu ${money(dueAmount(order))}` : "Đã thanh toán"}</span></button>${editable && !done ? `<div class="session-order-tools">${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button></div>${noteTools(order)}` : mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}</div>`;
   };
-  const groupedOrders = [...SHIFT_OPTIONS, "Chưa phân ca"].map(shift => ({
-    shift,
-    orders: orders.filter(order => (session.shifts?.[order.id] || "Chưa phân ca") === shift)
-  })).filter(group => group.orders.length);
+  // One list in the order the shipper chose; the shift is a label on each stop, not a grouping.
+  const groupedOrders = orders.length ? [{ shift: "Lộ trình", orders }] : [];
   const renderOrderGroups = (renderCard, kind) => groupedOrders.map(group => {
     const doneOrders = group.orders.filter(isDone);
     const pendingOrders = group.orders.filter(order => !isDone(order));
@@ -1174,7 +1172,6 @@ async function reorderWithKeyboard(orderId, offset) {
   const index = session.orderIds.indexOf(orderId);
   const targetIndex = index + offset;
   if (index < 0 || targetIndex < 0 || targetIndex >= session.orderIds.length) return;
-  if (session.shifts?.[session.orderIds[targetIndex]] !== session.shifts?.[orderId]) return;
   try {
     announceOrderPosition(orderId, targetIndex);
     await command("reorderOrderInSession", { sessionId: session.id, orderId, targetOrderId: session.orderIds[targetIndex] }, "Đã sắp xếp lộ trình.");
@@ -1208,8 +1205,7 @@ function runRouteDragFrame() {
   routeDragFrame = null;
   const drag = routeDrag;
   if (!drag?.active) return;
-  if (!drag.parent.isConnected || drag.element.parentElement !== drag.parent
-    || (drag.element.dataset.shift || "Chưa phân ca") !== drag.parent.dataset.routeShift) {
+  if (!drag.parent.isConnected || drag.element.parentElement !== drag.parent) {
     cancelRouteDrag();
     return;
   }
@@ -1340,7 +1336,7 @@ async function finishRouteDrag(event, cancelled = false) {
   const session = activeSession();
   const rowIds = dragRows(drag.parent).map(row => row.dataset.orderId);
   const shiftSlots = session?.orderIds.map((id, index) => ({ id, index }))
-    .filter(item => (session.shifts?.[item.id] || "Chưa phân ca") === drag.parent.dataset.routeShift && !session.legs[item.id]?.completedAt)
+    .filter(item => !session.legs[item.id]?.completedAt)
     .map(item => item.index) || [];
   const localIndex = rowIds.indexOf(drag.id);
   const targetIndex = shiftSlots[localIndex] ?? -1;

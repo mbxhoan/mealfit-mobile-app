@@ -98,15 +98,11 @@ export function missingCriticalOrderFields(order) {
   return missing;
 }
 
-const shiftRank = shift => {
-  const rank = SHIFT_OPTIONS.indexOf(shift);
-  return rank < 0 ? SHIFT_OPTIONS.length : rank;
-};
-
 function sortPendingByShift(orderIds, shifts, legs) {
   const completed = orderIds.filter(id => legs[id]?.completedAt);
   const pending = orderIds.filter(id => !legs[id]?.completedAt);
-  return [...completed, ...pending.sort((a, b) => shiftRank(shifts[a]) - shiftRank(shifts[b]))];
+  // Route order is the order the shipper chose; a shift is only a label. Finished stops stay first, the rest keep their order.
+  return [...completed, ...pending];
 }
 
 const TERMINAL_DELIVERY_STATUSES = ["Đã giao hàng", "Đã huỷ đơn"];
@@ -414,7 +410,6 @@ export function reorderOrderInSession(state, orderId, targetIndex) {
   if (index < completedCount) throw new Error("Không thể di chuyển điểm đã giao.");
   if (targetIndex < completedCount) return state;
   if (index === targetIndex) return state;
-  if (session.shifts?.[session.orderIds[targetIndex]] !== session.shifts?.[orderId]) throw new Error("Chỉ có thể sắp xếp đơn trong cùng một ca.");
   const orderIds = [...session.orderIds];
   orderIds.splice(index, 1);
   orderIds.splice(targetIndex, 0, orderId);
@@ -428,7 +423,6 @@ export function moveOrderInSession(state, orderId, offset) {
   const targetIndex = index + offset;
   const completedCount = session.orderIds.filter(id => session.legs[id]?.completedAt).length;
   if (index < completedCount || targetIndex < completedCount || targetIndex < 0 || targetIndex >= session.orderIds.length) return state;
-  if (session.shifts?.[session.orderIds[targetIndex]] !== session.shifts?.[orderId]) return state;
   return reorderOrderInSession(state, orderId, targetIndex);
 }
 

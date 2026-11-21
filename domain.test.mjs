@@ -225,34 +225,31 @@ test("an active route can collect and deliver a later stop in another shift", ()
   assert.equal(session(state).status, "completed");
 });
 
-test("new session groups stops by shift and keeps route edits inside each shift", () => {
+test("a new session keeps the order the stops were chosen in; the shift is only a label", () => {
   let state = createSession(seed(), ["B", "A"], { A: "Sáng", B: "Chiều" }, 1000);
+  assert.deepEqual(session(state).orderIds, ["B", "A"]);
   assert.equal(session(state).status, "notStarted");
   assert.equal(order(state, "A").deliveryStatus, "Chưa giao hàng");
   assert.equal(order(state, "A").sessionId, null);
   state = addOrdersToSession(state, ["C"], "Tối");
-  assert.equal(order(state, "C").deliveryStatus, "Chưa giao hàng");
+  assert.deepEqual(session(state).orderIds, ["B", "A", "C"]);
   state = moveOrderInSession(state, "C", -1);
-  assert.deepEqual(session(state).orderIds, ["A", "B", "C"]);
-  assert.equal(session(state).shifts.C, "Tối");
+  assert.deepEqual(session(state).orderIds, ["B", "C", "A"]);
   state = setSessionOrderShift(state, "A", "Tối");
   assert.deepEqual(session(state).orderIds, ["B", "C", "A"]);
-  state = setSessionOrderShift(state, "C", "Chiều");
-  assert.equal(session(state).shifts.C, "Chiều");
-  assert.deepEqual(session(state).orderIds, ["B", "C", "A"]);
-  assert.throws(() => reorderOrderInSession(state, "C", 2), /cùng một ca/);
+  state = reorderOrderInSession(state, "A", 0);
+  assert.deepEqual(session(state).orderIds, ["A", "B", "C"]);
   state = removeOrderFromSession(state, "B");
   assert.equal(order(state, "B").deliveryStatus, "Chưa giao hàng");
   state = startSession(state, 2000);
   assert.equal(session(state).status, "active");
   assert.equal(order(state, "A").deliveryStatus, "Đang giao hàng");
   assert.equal(order(state, "A").sessionId, session(state).id);
-  assert.equal(order(state, "C").deliveryStatus, "Đang giao hàng");
   assert.throws(() => startSession(state, 3000), /Phiên này đã bắt đầu/);
   assert.throws(() => createSession(state, ["B"], { B: "Sáng" }, 3000), /Đã có một phiên/);
   state = addOrdersToSession(state, ["B"], "Sáng");
   assert.equal(order(state, "B").deliveryStatus, "Đang giao hàng");
-  assert.deepEqual(session(state).orderIds, ["B", "C", "A"]);
+  assert.deepEqual(session(state).orderIds, ["A", "C", "B"]);
 });
 
 test("session creation and adding orders save, update, and clear delivery notes and map links", () => {
@@ -306,11 +303,11 @@ test("route reordering stays within a shift and cannot cross completed stops", (
   assert.deepEqual(session(state).orderIds, ["C", "B", "A"]);
 });
 
-test("legacy route normalization preserves completed history and sorts the open stops by shift", () => {
+test("route normalization keeps finished stops first and the open stops in their chosen order", () => {
   const state = seed();
   state.sessions = [{ id: "old", status: "active", orderIds: ["A", "B", "C"], shifts: { A: "Sáng", B: "Tối", C: "Chiều" }, legs: { A: { completedAt: 1500 } } }];
   state.activeSessionId = "old";
-  assert.deepEqual(normalizeState(state).sessions[0].orderIds, ["A", "C", "B"]);
+  assert.deepEqual(normalizeState(state).sessions[0].orderIds, ["A", "B", "C"]);
 });
 
 test("pause locks delivery edits and excludes paused time from route legs", () => {
