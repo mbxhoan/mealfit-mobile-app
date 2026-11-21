@@ -2,6 +2,7 @@ import {
   addOrdersToSession,
   allowedPhotoCount,
   cancelSession,
+  completeSession,
   classifyNetworkSignal,
   createSession,
   deleteSession,
@@ -597,14 +598,16 @@ function sessionScreen() {
       ${!done && session.status === "paused" ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? '<button class="button secondary small" disabled>Đã thanh toán</button>' : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" disabled>Đã giao hàng</button></div>` : ""}
       ${!done && delivering ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? `<button class="button secondary small" data-action="pay-order" data-id="${safe(order.id)}">Đã thanh toán</button>` : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" data-action="deliver-order" data-id="${safe(order.id)}">Đã giao hàng</button></div>` : ""}</div></div>`;
   };
-  const controls = role === "shipper" && session.status === "notStarted"
+  const finishButton = role === "shipper" && ["active", "paused"].includes(session.status) && stats.remainingCount === 0
+    ? `<button class="button full" style="margin-bottom:12px" data-action="complete-session" data-id="${safe(session.id)}">Hoàn tất phiên</button>` : "";
+  const controls = finishButton + (role === "shipper" && session.status === "notStarted"
     ? `<div class="session-controls"><button class="button full" data-action="start-session">Bắt đầu giao</button><button class="button danger full" data-action="cancel-session">Hủy lộ trình</button></div>`
     : role === "shipper" && session.status === "active"
       ? `<div class="session-controls"><button class="button secondary full" data-action="pause-session">Tạm dừng</button><button class="button danger full" data-action="cancel-session">Hủy lộ trình</button></div>`
       : role === "shipper" && session.status === "paused"
         ? `<div class="paused-note">Các thao tác giao hàng đang khóa.</div><div class="session-controls"><button class="button full" data-action="resume-session">Tiếp tục</button><button class="button danger full" data-action="cancel-session">Hủy lộ trình</button></div>`
         : role === "shipper" && ["completed", "cancelled"].includes(session.status) && !activeSession()
-          ? `<button class="button full" style="margin:16px 0" data-action="new-session">Tạo phiên mới</button>` : "";
+          ? `<button class="button full" style="margin:16px 0" data-action="new-session">Tạo phiên mới</button>` : "");
   const unassigned = session.orderIds.filter(id => !session.shifts?.[id]).length;
   const orderListCard = (order, index) => {
     const done = isDone(order);
@@ -2022,6 +2025,12 @@ app.addEventListener("click", async event => {
       modal = null;
       await updateState(next, "Đã xóa phiên lộ trình.");
     } catch (error) { modal = null; render(); flash(error.message); }
+    return;
+  }
+  if (action === "complete-session") {
+    if (role !== "shipper") { flash("Chỉ shipper có thể hoàn tất phiên."); return; }
+    try { await updateState(completeSession(state, id), "Đã hoàn tất phiên giao hàng."); }
+    catch (error) { flash(error.message); }
     return;
   }
   if (action === "confirm-cancel-session") {

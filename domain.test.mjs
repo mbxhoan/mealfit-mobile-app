@@ -4,6 +4,7 @@ import {
   addOrdersToSession,
   allowedPhotoCount,
   cancelSession,
+  completeSession,
   classifyNetworkSignal,
   createSession,
   deleteSession,
@@ -576,4 +577,16 @@ test("normalizing closes an open session once every stop is done so all devices 
   const partial = normalizeState({ ...route, orders: route.orders.map(item => item.id === "A" ? { ...item, deliveryStatus: "Đã giao hàng", deliveredAt: 3000 } : item) });
   assert.equal(partial.sessions[0].status, "active");
   assert.equal(partial.activeSessionId, route.sessions[0].id);
+});
+
+test("completeSession closes a route with no pending stops and refuses one that still has stops", () => {
+  const route = startSession(createSession(seed(), ["A", "B"], { A: "Sáng", B: "Chiều" }, 1000), 2000);
+  const id = route.sessions[0].id;
+  assert.throws(() => completeSession(route, id, 9000), /Còn 2 điểm chưa giao/);
+  const delivered = { ...route, orders: route.orders.map(item => ({ ...item, deliveryStatus: "Đã giao hàng", deliveredAt: 3000 })) };
+  const withLegs = { ...delivered, sessions: delivered.sessions.map(item => ({ ...item, legs: { A: { completedAt: 3000 }, B: { completedAt: 4000 } } })) };
+  const done = completeSession(withLegs, id, 9000);
+  assert.equal(done.sessions[0].status, "completed");
+  assert.equal(done.sessions[0].completedAt, 4000);
+  assert.equal(done.activeSessionId, null);
 });

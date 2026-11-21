@@ -339,6 +339,24 @@ export function cancelSession(state, cancelledAt = Date.now()) {
   };
 }
 
+export function completeSession(state, sessionId, completedAt = Date.now()) {
+  const session = state.sessions.find(item => item.id === sessionId);
+  if (!session || !["active", "paused"].includes(session.status)) throw new Error("Phiên không còn đang giao.");
+  const pending = session.orderIds.filter(id => getOrder(state, id) && !session.legs?.[id]?.completedAt);
+  if (pending.length) throw new Error(`Còn ${pending.length} điểm chưa giao.`);
+  const doneAt = Math.max(0, ...session.orderIds.map(id => session.legs?.[id]?.completedAt || 0)) || completedAt;
+  const intervals = session.status === "paused" && session.pausedAt
+    ? [...session.pauseIntervals, { startedAt: session.pausedAt, resumedAt: Math.max(doneAt, session.pausedAt) }]
+    : session.pauseIntervals;
+  return {
+    ...state,
+    activeSessionId: state.activeSessionId === sessionId ? null : state.activeSessionId,
+    sessions: state.sessions.map(item => item.id === sessionId
+      ? { ...item, status: "completed", pausedAt: null, pauseIntervals: intervals, completedAt: item.completedAt ?? doneAt }
+      : item)
+  };
+}
+
 export function restoreConflictedSession(state, sessionId, userId) {
   const session = state.sessions.find(item => item.id === sessionId);
   if (!session) throw new Error("Không tìm thấy phiên giao hàng đã lưu trên thiết bị.");
