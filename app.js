@@ -425,7 +425,7 @@ function orderDetailScreen(view) {
   const inSession = fromSession && session?.orderIds.includes(order.id) && session.id === order.sessionId;
   const orphanDelivery = isOrphanInTransitOrder(state, order, user?.id);
   const actions = inSession && !sessionPaused && session?.status === "active" && order.deliveryStatus === "Đang giao hàng"
-    ? `<div class="bottom-actions ${due ? "" : "single"}">${due ? `<button class="button secondary" data-action="pay-order" data-id="${safe(order.id)}">Đã thanh toán</button>` : ""}<button class="button ${due ? "" : "full"}" data-action="deliver-order" data-id="${safe(order.id)}">Đã giao hàng</button></div>`
+    ? `<div class="bottom-actions ${due ? "" : "single"}">${due ? `<button class="button secondary" data-action="pay-order" data-id="${safe(order.id)}" ${commandRunning ? "disabled" : ""}>Đã thanh toán</button>` : ""}<button class="button ${due ? "" : "full"}" data-action="deliver-order" data-id="${safe(order.id)}" ${commandRunning ? "disabled" : ""}>${commandRunning ? '<span class="spinner" aria-hidden="true"></span> Đang lưu…' : "Đã giao hàng"}</button></div>`
     : orphanDelivery ? `<div class="bottom-actions single"><button class="button full" data-action="choose-orphan-status" data-id="${safe(order.id)}" data-status="Đã giao hàng">Đã giao hàng</button></div>`
     : inSession && sessionPaused && order.deliveryStatus === "Đang giao hàng" ? `<div class="bottom-actions ${due ? "" : "single"}">${due ? '<button class="button secondary" disabled>Đã thanh toán</button>' : ""}<button class="button ${due ? "" : "full"}" disabled>Đã giao hàng</button></div><p class="fine-print">Tiếp tục phiên để giao hàng.</p>` : "";
   const mayCorrect = order.deliveryStatus === "Đã giao hàng" && (isStaff() || role === "shipper") && !sessionPaused;
@@ -570,7 +570,7 @@ function sessionScreen() {
       <div class="stop-bottom">${shiftSelect(order)}<div class="stop-tools">${mapsButton(order.mapsLink, `Mở vị trí của ${order.customer} trên Google Maps`)}${phone ? `<a class="stop-call" href="tel:${safe(phone)}" aria-label="Gọi ${safe(order.customer)}">${icon("phone", 18)}</a>` : ""}${editable && !done ? `<button class="mini-button drag-handle" type="button" data-drag-order="${safe(order.id)}" aria-label="Kéo để sắp xếp ${safe(order.customer)}; dùng phím mũi tên lên hoặc xuống" aria-keyshortcuts="ArrowUp ArrowDown">${icon("grip", 18)}</button><button class="mini-button" data-action="remove-stop" data-id="${safe(order.id)}" aria-label="Bỏ ${safe(order.id)} khỏi phiên">${icon("close", 17)}</button>` : ""}</div></div>
       ${leg ? `<div class="leg-time">${icon("clock", 14)} Chặng này: ${elapsedLabel(leg.durationMs)} · ${timeLabel(leg.completedAt)}</div>` : ""}
       ${!done && session.status === "paused" ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? '<button class="button secondary small" disabled>Đã thanh toán</button>' : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" disabled>Đã giao hàng</button></div>` : ""}
-      ${!done && delivering ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? `<button class="button secondary small" data-action="pay-order" data-id="${safe(order.id)}">Đã thanh toán</button>` : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" data-action="deliver-order" data-id="${safe(order.id)}">Đã giao hàng</button></div>` : ""}</div></div>`;
+      ${!done && delivering ? `<div class="stop-actions ${dueAmount(order) ? "" : "single"}">${dueAmount(order) ? `<button class="button secondary small" data-action="pay-order" data-id="${safe(order.id)}" ${commandRunning ? "disabled" : ""}>Đã thanh toán</button>` : ""}<button class="button small ${dueAmount(order) ? "" : "full"}" data-action="deliver-order" data-id="${safe(order.id)}" ${commandRunning ? "disabled" : ""}>${commandRunning ? '<span class="spinner" aria-hidden="true"></span> Đang lưu…' : "Đã giao hàng"}</button></div>` : ""}</div></div>`;
   };
   const finishButton = role === "shipper" && ["active", "paused"].includes(session.status) && stats.remainingCount === 0
     ? `<button class="button full" style="margin-bottom:12px" data-action="complete-session" data-id="${safe(session.id)}">Hoàn tất phiên</button>` : "";
@@ -881,6 +881,7 @@ async function command(name, args, message) {
   if (commandRunning) throw new Error("Đang lưu thao tác trước đó. Thử lại sau giây lát.");
   commandRunning = true;
   document.querySelector(".app-shell")?.classList.add("saving");
+  render();
   const commandId = crypto.randomUUID();
   try {
     let result = null;
@@ -906,6 +907,7 @@ async function command(name, args, message) {
   } finally {
     commandRunning = false;
     document.querySelector(".app-shell")?.classList.remove("saving");
+    render();
   }
 }
 
